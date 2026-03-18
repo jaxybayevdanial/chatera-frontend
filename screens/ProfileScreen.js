@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   StyleSheet,
   Text,
@@ -8,13 +8,35 @@ import {
   TextInput,
   Platform,
   ActivityIndicator,
+  Keyboard,
 } from 'react-native';
 import GoogleLogoColor from '../components/GoogleLogoColor';
+/** Выкл.: в Instagram / in-app browser Google требует отдельный логин */
+const SHOW_GOOGLE_SIGN_IN = false;
 
 export default function ProfileScreen() {
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+
+  useEffect(() => {
+    if (Platform.OS === 'web') return undefined;
+    const showEvt =
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt =
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const s = Keyboard.addListener(showEvt, (e) => {
+      setKeyboardHeight(e.endCoordinates?.height ?? 0);
+    });
+    const h = Keyboard.addListener(hideEvt, () => setKeyboardHeight(0));
+    return () => {
+      s.remove();
+      h.remove();
+    };
+  }, []);
+
+  const stickFooter = Platform.OS !== 'web' && keyboardHeight > 0;
 
   return (
     <View style={styles.container}>
@@ -48,35 +70,52 @@ export default function ProfileScreen() {
               secureTextEntry
               accessibilityLabel="Пароль"
             />
+          </View>
+          <Text style={styles.screenHint}>
+            Создайте аккаунт, чтобы сохранить доступ к агенту, настройкам и диалогам — и
+            не потерять их при смене устройства или браузера.
+          </Text>
+        </View>
+      </ScrollView>
 
-            <Pressable
-              onPress={() => {
-                if (!authEmail.trim() || !authPassword.trim()) return;
-                setAuthLoading(true);
-                setTimeout(() => setAuthLoading(false), 1500);
-              }}
-              style={[
-                styles.submitBtn,
-                (!authEmail.trim() || !authPassword.trim() || authLoading) &&
-                  styles.submitBtnDisabled,
-              ]}
-              disabled={!authEmail.trim() || !authPassword.trim() || authLoading}
-              accessibilityRole="button"
-              accessibilityLabel="Создать аккаунт"
-            >
-              {authLoading ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <Text style={styles.submitBtnText}>Создать аккаунт</Text>
-              )}
-            </Pressable>
+      <View
+        style={[
+          styles.stickyActions,
+          stickFooter && [
+            styles.stickyActionsAboveKb,
+            { bottom: keyboardHeight },
+          ],
+        ]}
+      >
+        <Pressable
+          onPress={() => {
+            if (!authEmail.trim() || !authPassword.trim()) return;
+            setAuthLoading(true);
+            setTimeout(() => setAuthLoading(false), 1500);
+          }}
+          style={[
+            styles.submitBtn,
+            (!authEmail.trim() || !authPassword.trim() || authLoading) &&
+              styles.submitBtnDisabled,
+          ]}
+          disabled={!authEmail.trim() || !authPassword.trim() || authLoading}
+          accessibilityRole="button"
+          accessibilityLabel="Создать аккаунт"
+        >
+          {authLoading ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : (
+            <Text style={styles.submitBtnText}>Создать аккаунт</Text>
+          )}
+        </Pressable>
 
+        {SHOW_GOOGLE_SIGN_IN ? (
+          <>
             <View style={styles.dividerRow}>
               <View style={styles.dividerLine} />
               <Text style={styles.dividerText}>или</Text>
               <View style={styles.dividerLine} />
             </View>
-
             <Pressable
               style={({ pressed }) => [
                 styles.googleBtn,
@@ -89,13 +128,9 @@ export default function ProfileScreen() {
               <GoogleLogoColor size={22} />
               <Text style={styles.googleBtnText}>Продолжить с Google</Text>
             </Pressable>
-          </View>
-          <Text style={styles.screenHint}>
-            Создайте аккаунт, чтобы сохранить доступ к агенту, настройкам и диалогам — и
-            не потерять их при смене устройства или браузера.
-          </Text>
-        </View>
-      </ScrollView>
+          </>
+        ) : null}
+      </View>
     </View>
   );
 }
@@ -109,12 +144,14 @@ const styles = StyleSheet.create({
   },
   scroll: {
     flex: 1,
+    minHeight: 0,
   },
   scrollContent: {
     flexGrow: 1,
     justifyContent: 'center',
     paddingHorizontal: 20,
-    paddingVertical: 32,
+    paddingTop: 32,
+    paddingBottom: 24,
     ...(Platform.OS === 'web' && { minHeight: '100%' }),
   },
   authWrap: {
@@ -184,12 +221,35 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     ...(Platform.OS === 'web' && { outlineStyle: 'none' }),
   },
+  stickyActions: {
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === 'ios' ? 28 : 20,
+    backgroundColor: '#F3F4F6',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#E5E7EB',
+    gap: 12,
+    maxWidth: FORM_MAX + 40,
+    alignSelf: 'center',
+    width: '100%',
+  },
+  stickyActionsAboveKb: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    maxWidth: '100%',
+    paddingBottom: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    elevation: 16,
+  },
   submitBtn: {
     backgroundColor: '#2563EB',
     borderRadius: 12,
     paddingVertical: 14,
     alignItems: 'center',
-    marginTop: 4,
   },
   submitBtnDisabled: {
     opacity: 0.4,

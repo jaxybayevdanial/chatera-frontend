@@ -10,6 +10,9 @@ import {
   Keyboard,
   Image,
   ActivityIndicator,
+  Animated,
+  Easing,
+  useWindowDimensions,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -18,6 +21,7 @@ import ChateraLogo from './components/ChateraLogo';
 import CreateAgentScreen from './screens/CreateAgentScreen';
 import ChatScreen from './screens/ChatScreen';
 import MainTabsScreen from './screens/MainTabsScreen';
+import WaConnectScreen from './screens/WaConnectScreen';
 
 const USE_MOCK = true;
 const MOCK_USERS = [
@@ -38,6 +42,61 @@ function getMockSearchResults(query) {
 }
 
 const DEBOUNCE_MS = 900;
+const IS_WEB = Platform.OS === 'web';
+/** Чуть быстрее, без лишних слоёв — только слайд */
+const WEB_SLIDE_MS = 200;
+const WEB_SLIDE_OUT_MS = 175;
+
+/** Web: чат слайдом справа; close(after) — выезд, затем after?.(), onLayerClosed */
+function WebChatSlideLayer({ width, onLayerClosed, children }) {
+  const x = useRef(new Animated.Value(width)).current;
+
+  useEffect(() => {
+    const w = Math.max(width, 320);
+    x.setValue(w);
+    Animated.timing(x, {
+      toValue: 0,
+      duration: WEB_SLIDE_MS,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const wRef = useRef(Math.max(width, 320));
+  wRef.current = Math.max(width, 320);
+
+  const close = useCallback(
+    (after) => {
+      const w = wRef.current;
+      Animated.timing(x, {
+        toValue: w,
+        duration: WEB_SLIDE_OUT_MS,
+        easing: Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) {
+          after?.();
+          onLayerClosed?.();
+        }
+      });
+    },
+    [x, onLayerClosed],
+  );
+
+  return (
+    <Animated.View
+      style={[
+        styles.webChatLayer,
+        {
+          transform: [{ translateX: x }],
+        },
+      ]}
+    >
+      {children(close)}
+    </Animated.View>
+  );
+}
 
 function AvatarImage({ profilePicUrl, style }) {
   if (!profilePicUrl) {
@@ -59,11 +118,17 @@ function AvatarImage({ profilePicUrl, style }) {
 }
 
 export default function App() {
+  const { width: windowWidth } = useWindowDimensions();
   const [selectedAccount, setSelectedAccount] = useState(null);
   const [viewState, setViewState] = useState('home');
   const [mainTabsMountId, setMainTabsMountId] = useState(0);
   const [mainStartTab, setMainStartTab] = useState('settings');
   const [dialogsAutoOpenLinkModal, setDialogsAutoOpenLinkModal] = useState(false);
+  const [webOverlayChatOpen, setWebOverlayChatOpen] = useState(false);
+  /** WA подключён (общий для табов и чата) */
+  const [waConnected, setWaConnected] = useState(false);
+  /** Подключение WA поверх чата — без ухода на вкладку Диалоги */
+  const [waConnectOverChat, setWaConnectOverChat] = useState(false);
 
   const openMain = useCallback((tab = 'settings', opts = {}) => {
     setMainStartTab(tab);
@@ -116,15 +181,73 @@ export default function App() {
     setSearchQuery(account.username);
     Keyboard.dismiss();
     setSelectedAccount(account);
+    setWaConnected(false);
+    setWaConnectOverChat(false);
     setViewState('creating');
   }, []);
 
   if (viewState === 'main' && selectedAccount) {
+    if (IS_WEB) {
+      return (
+        <View style={styles.webMainChatHost}>
+          <MainTabsScreen
+            key={mainTabsMountId}
+            account={selectedAccount}
+            waConnected={waConnected}
+            onWaConnected={() => setWaConnected(true)}
+            onTest={() => {
+              setWaConnectOverChat(false);
+              setWebOverlayChatOpen(true);
+            }}
+            initialTab={mainStartTab}
+            dialogsAutoOpenLinkModal={dialogsAutoOpenLinkModal}
+            onDialogsAutoOpenLinkConsumed={clearDialogsAutoOpenLink}
+          />
+          {webOverlayChatOpen ? (
+            <WebChatSlideLayer
+              width={windowWidth}
+              onLayerClosed={() => {
+                setWaConnectOverChat(false);
+                setWebOverlayChatOpen(false);
+              }}
+            >
+              {(close) => (
+                <View style={styles.chatWaHost}>
+                  <ChatScreen
+                    account={selectedAccount}
+                    onBack={() => close()}
+                    onConfigureAgent={() => close(() => openMain('settings'))}
+                    onConnectWhatsApp={() => setWaConnectOverChat(true)}
+                  />
+                  {waConnectOverChat ? (
+                    <View style={styles.waOverChat}>
+                      <WaConnectScreen
+                        onClose={() => setWaConnectOverChat(false)}
+                        onSuccess={() => {
+                          setWaConnected(true);
+                          setWaConnectOverChat(false);
+                          close(() => openMain('dialogs'));
+                        }}
+                      />
+                    </View>
+                  ) : null}
+                </View>
+              )}
+            </WebChatSlideLayer>
+          ) : null}
+        </View>
+      );
+    }
     return (
       <MainTabsScreen
         key={mainTabsMountId}
         account={selectedAccount}
-        onTest={() => setViewState('chat')}
+        waConnected={waConnected}
+        onWaConnected={() => setWaConnected(true)}
+        onTest={() => {
+          setWaConnectOverChat(false);
+          setViewState('chat');
+        }}
         initialTab={mainStartTab}
         dialogsAutoOpenLinkModal={dialogsAutoOpenLinkModal}
         onDialogsAutoOpenLinkConsumed={clearDialogsAutoOpenLink}
@@ -133,13 +256,55 @@ export default function App() {
   }
 
   if (viewState === 'chat' && selectedAccount) {
+    if (IS_WEB) {
+      return (
+        <WebChatSlideLayer width={windowWidth} onLayerClosed={() => setWaConnectOverChat(false)}>
+          {(close) => (
+            <View style={styles.chatWaHost}>
+              <ChatScreen
+                account={selectedAccount}
+                onBack={() => close(() => openMain('settings'))}
+                onConfigureAgent={() => close(() => openMain('settings'))}
+                onConnectWhatsApp={() => setWaConnectOverChat(true)}
+              />
+              {waConnectOverChat ? (
+                <View style={styles.waOverChat}>
+                  <WaConnectScreen
+                    onClose={() => setWaConnectOverChat(false)}
+                    onSuccess={() => {
+                      setWaConnected(true);
+                      setWaConnectOverChat(false);
+                      close(() => openMain('dialogs'));
+                    }}
+                  />
+                </View>
+              ) : null}
+            </View>
+          )}
+        </WebChatSlideLayer>
+      );
+    }
     return (
-      <ChatScreen
-        account={selectedAccount}
-        onBack={() => openMain('settings')}
-        onConfigureAgent={() => openMain('settings')}
-        onConnectWhatsApp={() => openMain('dialogs', { openWaLinkModal: true })}
-      />
+      <View style={styles.chatWaHost}>
+        <ChatScreen
+          account={selectedAccount}
+          onBack={() => openMain('settings')}
+          onConfigureAgent={() => openMain('settings')}
+          onConnectWhatsApp={() => setWaConnectOverChat(true)}
+        />
+        {waConnectOverChat ? (
+          <View style={styles.waOverChat}>
+            <WaConnectScreen
+              onClose={() => setWaConnectOverChat(false)}
+              onSuccess={() => {
+                setWaConnected(true);
+                setWaConnectOverChat(false);
+                openMain('dialogs');
+              }}
+            />
+          </View>
+        ) : null}
+      </View>
     );
   }
 
@@ -260,6 +425,30 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
+  webMainChatHost: {
+    flex: 1,
+    overflow: 'hidden',
+    position: 'relative',
+    ...(IS_WEB && { minHeight: '100vh' }),
+  },
+  webChatLayer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#fff',
+    ...(IS_WEB && { minHeight: '100vh' }),
+  },
+  chatWaHost: {
+    flex: 1,
+  },
+  waOverChat: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#ffffff',
+    zIndex: 50,
+    elevation: 50,
+  },
   container: {
     flex: 1,
   },

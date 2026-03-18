@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
   StyleSheet,
   Text,
@@ -9,6 +9,8 @@ import {
   Platform,
   Modal,
   Alert,
+  Keyboard,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -147,9 +149,13 @@ export default function AgentSettingsScreen({ account }) {
   }, []);
 
   return (
-    <View style={styles.container}>
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      enabled={Platform.OS === 'ios'}
+    >
       <ScrollView
-        style={styles.scroll}
+        style={styles.scrollFlex}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
@@ -242,18 +248,45 @@ export default function AgentSettingsScreen({ account }) {
         </View>
       </ScrollView>
 
-      {/* Full-screen instruction editor */}
-      <Modal
+      <KbTextModal
+        visible={kbTextModal}
+        onClose={() => setKbTextModal(false)}
+        kbDraftTitle={kbDraftTitle}
+        setKbDraftTitle={setKbDraftTitle}
+        kbDraftText={kbDraftText}
+        setKbDraftText={setKbDraftText}
+        onSave={addTextEntry}
+      />
+
+      <InstructionModal
         visible={expandedInstruction}
-        animationType="slide"
-        presentationStyle="pageSheet"
-        onRequestClose={() => setExpandedInstruction(false)}
+        onClose={() => setExpandedInstruction(false)}
+        instruction={instruction}
+        onChangeInstruction={setInstruction}
+      />
+    </KeyboardAvoidingView>
+  );
+}
+
+function InstructionModal({ visible, onClose, instruction, onChangeInstruction }) {
+  return (
+    <Modal
+      visible={visible}
+      animationType="slide"
+      presentationStyle="pageSheet"
+      onRequestClose={onClose}
+    >
+      <KeyboardAvoidingView
+        style={styles.modalRoot}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
+        enabled={Platform.OS !== 'web'}
       >
         <View style={styles.modalContainer}>
           <View style={styles.modalHeader}>
             <Text style={styles.modalTitle}>Инструкция</Text>
             <Pressable
-              onPress={() => setExpandedInstruction(false)}
+              onPress={onClose}
               style={styles.modalCloseBtn}
               accessibilityRole="button"
               accessibilityLabel="Закрыть"
@@ -264,78 +297,131 @@ export default function AgentSettingsScreen({ account }) {
           <TextInput
             style={styles.modalInput}
             value={instruction}
-            onChangeText={setInstruction}
+            onChangeText={onChangeInstruction}
             multiline
             textAlignVertical="top"
             autoFocus
             accessibilityLabel="Редактирование инструкции"
           />
         </View>
-      </Modal>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
 
-      {/* Knowledge-base text entry modal */}
-      <Modal
-        visible={kbTextModal}
-        animationType="slide"
-        presentationStyle="pageSheet"
-        onRequestClose={() => setKbTextModal(false)}
-      >
-        <View style={styles.modalContainer}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Новая запись</Text>
-            <Pressable
-              onPress={() => setKbTextModal(false)}
-              style={styles.modalCloseBtn}
-              accessibilityRole="button"
-              accessibilityLabel="Закрыть"
-            >
-              <Ionicons name="close" size={24} color="#111827" />
-            </Pressable>
-          </View>
+function KbTextModal({
+  visible,
+  onClose,
+  kbDraftTitle,
+  setKbDraftTitle,
+  kbDraftText,
+  setKbDraftText,
+  onSave,
+}) {
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
 
-          <View style={styles.kbModalBody}>
-            <TextInput
-              style={styles.kbModalTitleInput}
-              value={kbDraftTitle}
-              onChangeText={setKbDraftTitle}
-              placeholder="Название (необязательно)"
-              placeholderTextColor="#9CA3AF"
-              accessibilityLabel="Название записи"
-            />
-            <TextInput
-              style={styles.kbModalTextInput}
-              value={kbDraftText}
-              onChangeText={setKbDraftText}
-              placeholder="Вставьте текст…"
-              placeholderTextColor="#9CA3AF"
-              multiline
-              textAlignVertical="top"
-              autoFocus
-              accessibilityLabel="Текст записи"
-            />
-            <Pressable
-              style={[
-                styles.kbModalSaveBtn,
-                !kbDraftText.trim() && styles.kbModalSaveBtnDisabled,
-              ]}
-              onPress={addTextEntry}
-              disabled={!kbDraftText.trim()}
-              accessibilityRole="button"
-              accessibilityLabel="Сохранить запись"
-            >
-              <Text
-                style={[
-                  styles.kbModalSaveText,
-                  !kbDraftText.trim() && styles.kbModalSaveTextDisabled,
-                ]}
-              >
-                Сохранить
-              </Text>
-            </Pressable>
-          </View>
+  useEffect(() => {
+    if (!visible || Platform.OS === 'web') {
+      setKeyboardHeight(0);
+      return undefined;
+    }
+    const showEvt =
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt =
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const s = Keyboard.addListener(showEvt, (e) => {
+      setKeyboardHeight(e.endCoordinates?.height ?? 0);
+    });
+    const h = Keyboard.addListener(hideEvt, () => setKeyboardHeight(0));
+    return () => {
+      s.remove();
+      h.remove();
+    };
+  }, [visible]);
+
+  const stickSave = Platform.OS !== 'web' && keyboardHeight > 0;
+
+  return (
+    <Modal
+      visible={visible}
+      animationType="slide"
+      presentationStyle="pageSheet"
+      onRequestClose={onClose}
+    >
+      <View style={styles.modalKbRoot}>
+        <View style={styles.modalHeader}>
+          <Text style={styles.modalTitle}>Новая запись</Text>
+          <Pressable
+            onPress={onClose}
+            style={styles.modalCloseBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Закрыть"
+          >
+            <Ionicons name="close" size={24} color="#111827" />
+          </Pressable>
         </View>
-      </Modal>
-    </View>
+
+        <ScrollView
+          style={styles.kbModalScroll}
+          contentContainerStyle={[
+            styles.kbModalScrollContent,
+            stickSave && { paddingBottom: 88 },
+          ]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <TextInput
+            style={styles.kbModalTitleInput}
+            value={kbDraftTitle}
+            onChangeText={setKbDraftTitle}
+            placeholder="Название (необязательно)"
+            placeholderTextColor="#9CA3AF"
+            accessibilityLabel="Название записи"
+          />
+          <TextInput
+            style={styles.kbModalTextInputScroll}
+            value={kbDraftText}
+            onChangeText={setKbDraftText}
+            placeholder="Вставьте текст…"
+            placeholderTextColor="#9CA3AF"
+            multiline
+            textAlignVertical="top"
+            autoFocus
+            accessibilityLabel="Текст записи"
+          />
+        </ScrollView>
+
+        <View
+          style={[
+            styles.kbModalSaveWrap,
+            stickSave && [
+              styles.kbModalSaveSticky,
+              { bottom: keyboardHeight },
+            ],
+          ]}
+        >
+          <Pressable
+            style={[
+              styles.kbModalSaveBtn,
+              !kbDraftText.trim() && styles.kbModalSaveBtnDisabled,
+            ]}
+            onPress={onSave}
+            disabled={!kbDraftText.trim()}
+            accessibilityRole="button"
+            accessibilityLabel="Сохранить запись"
+          >
+            <Text
+              style={[
+                styles.kbModalSaveText,
+                !kbDraftText.trim() && styles.kbModalSaveTextDisabled,
+              ]}
+            >
+              Сохранить
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -346,6 +432,10 @@ const styles = StyleSheet.create({
   },
   scroll: {
     flex: 1,
+  },
+  scrollFlex: {
+    flex: 1,
+    minHeight: 0,
   },
   scrollContent: {
     padding: 16,
@@ -500,6 +590,15 @@ const styles = StyleSheet.create({
     color: '#3B82F6',
   },
 
+  modalRoot: {
+    flex: 1,
+    backgroundColor: '#ffffff',
+  },
+  modalKbRoot: {
+    flex: 1,
+    backgroundColor: '#ffffff',
+    paddingTop: Platform.OS === 'web' ? 24 : 56,
+  },
   /* Modals (shared) */
   modalContainer: {
     flex: 1,
@@ -533,7 +632,45 @@ const styles = StyleSheet.create({
     ...(Platform.OS === 'web' && { outlineStyle: 'none' }),
   },
 
-  /* KB text modal */
+  kbModalScroll: {
+    flex: 1,
+    minHeight: 0,
+  },
+  kbModalScrollContent: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 24,
+    flexGrow: 1,
+  },
+  kbModalTextInputScroll: {
+    minHeight: 200,
+    fontSize: 16,
+    lineHeight: 24,
+    color: '#111827',
+    textAlignVertical: 'top',
+    padding: 0,
+    ...(Platform.OS === 'web' && { outlineStyle: 'none' }),
+  },
+  kbModalSaveWrap: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === 'ios' ? 28 : 20,
+    backgroundColor: '#ffffff',
+    borderTopWidth: 1,
+    borderTopColor: '#E5E7EB',
+  },
+  kbModalSaveSticky: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    paddingBottom: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 20,
+  },
+  /* KB text modal (legacy layout) */
   kbModalBody: {
     flex: 1,
     padding: 16,
@@ -562,7 +699,6 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingVertical: 14,
     alignItems: 'center',
-    marginTop: 16,
   },
   kbModalSaveBtnDisabled: {
     backgroundColor: '#E5E7EB',

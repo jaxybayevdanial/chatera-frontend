@@ -1,9 +1,10 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { StyleSheet, Text, View, Pressable, Platform } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import AgentSettingsScreen from './AgentSettingsScreen';
 import DialogsScreen from './DialogsScreen';
+import WaConnectScreen from './WaConnectScreen';
 import ProfileScreen from './ProfileScreen';
 
 /** Только outline; активная вкладка — цвет + чуть больший размер, без filled-иконок */
@@ -19,13 +20,22 @@ export default function MainTabsScreen({
   initialTab = 'settings',
   dialogsAutoOpenLinkModal = false,
   onDialogsAutoOpenLinkConsumed,
+  waConnected = false,
+  onWaConnected,
 }) {
   const [activeTab, setActiveTab] = useState(initialTab);
-  const [waConnected, setWaConnected] = useState(false);
+  const [waConnectOpen, setWaConnectOpen] = useState(
+    () => Boolean(dialogsAutoOpenLinkModal),
+  );
 
-  const handleLinkConsumed = useCallback(() => {
-    onDialogsAutoOpenLinkConsumed?.();
-  }, [onDialogsAutoOpenLinkConsumed]);
+  useEffect(() => {
+    if (dialogsAutoOpenLinkModal) {
+      onDialogsAutoOpenLinkConsumed?.();
+    }
+  }, [dialogsAutoOpenLinkModal, onDialogsAutoOpenLinkConsumed]);
+
+  const openWaConnect = useCallback(() => setWaConnectOpen(true), []);
+  const closeWaConnect = useCallback(() => setWaConnectOpen(false), []);
 
   return (
     <View style={styles.container}>
@@ -34,7 +44,8 @@ export default function MainTabsScreen({
       <View style={styles.header}>
         <Text style={styles.headerTitle}>
           {activeTab === 'settings' && 'Агент'}
-          {activeTab === 'dialogs' && 'Диалоги'}
+          {activeTab === 'dialogs' &&
+            (waConnectOpen && !waConnected ? 'Подключение WhatsApp' : 'Диалоги')}
           {activeTab === 'profile' && 'Профиль'}
         </Text>
         {activeTab === 'settings' && (
@@ -52,14 +63,20 @@ export default function MainTabsScreen({
 
       <View style={styles.content}>
         {activeTab === 'settings' && <AgentSettingsScreen account={account} />}
-        {activeTab === 'dialogs' && (
-          <DialogsScreen
-            waConnected={waConnected}
-            onWaConnect={() => setWaConnected(true)}
-            autoOpenLinkModal={dialogsAutoOpenLinkModal}
-            onAutoOpenLinkConsumed={handleLinkConsumed}
-          />
-        )}
+        {activeTab === 'dialogs' &&
+          (waConnected ? (
+            <DialogsScreen waConnected onOpenConnect={openWaConnect} />
+          ) : waConnectOpen ? (
+            <WaConnectScreen
+              onClose={closeWaConnect}
+              onSuccess={() => {
+                onWaConnected?.();
+                closeWaConnect();
+              }}
+            />
+          ) : (
+            <DialogsScreen waConnected={false} onOpenConnect={openWaConnect} />
+          ))}
         {activeTab === 'profile' && <ProfileScreen />}
       </View>
 
