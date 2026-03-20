@@ -10,9 +10,11 @@ import {
   KeyboardAvoidingView,
   Keyboard,
   Image,
+  Alert,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
+import { testPromptAgent, fetchTestBotHistory, resetTestPromptHistory } from '../api/chatera';
 
 const WA = {
   headerBg: '#075E54',
@@ -29,13 +31,21 @@ const WA = {
   placeholder: '#667781',
 };
 
-const MOCK_MESSAGES = [
-  { id: '1', text: 'Привет! Я ваш AI-менеджер. Чем могу помочь?', isUser: false },
-  { id: '2', text: 'Расскажи про доставку', isUser: true },
-  { id: '3', text: 'Доставка по городу — 1–2 дня. По области — до 3 дней. Стоимость от 300 ₽.', isUser: false },
-];
-
 const IS_WEB = Platform.OS === 'web';
+
+/** Ответ API test-history → сообщения UI */
+function historyEntriesToMessages(entries) {
+  if (!Array.isArray(entries)) return [];
+  return entries.map((entry, i) => {
+    const role = String(entry?.role || '').toLowerCase();
+    const isUser = role === 'user';
+    return {
+      id: `srv_${i}_${role}`,
+      text: typeof entry?.content === 'string' ? entry.content : '',
+      isUser,
+    };
+  });
+}
 
 function TypingDots() {
   const [frame, setFrame] = useState(0);
@@ -69,14 +79,39 @@ function resetPageScroll() {
 
 export default function ChatScreen({
   account,
+  messages,
+  onMessagesChange,
   onBack,
   onConfigureAgent,
   onConnectWhatsApp,
+  showConnectWhatsApp = true,
 }) {
-  const [messages, setMessages] = useState(MOCK_MESSAGES);
   const [inputText, setInputText] = useState('');
+  const [isSending, setIsSending] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
   const scrollRef = useRef(null);
   const containerRef = useRef(null);
+
+  /** Подтянуть историю с бэка, если локально пусто (первый вход / F5) */
+  useEffect(() => {
+    if (messages.length > 0) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await fetchTestBotHistory();
+        if (cancelled) return;
+        const mapped = historyEntriesToMessages(data?.testBotHistory);
+        if (mapped.length) {
+          onMessagesChange((prev) => (prev.length === 0 ? mapped : prev));
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [messages.length, onMessagesChange]);
 
   const scrollToEnd = useCallback(() => {
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 120);
@@ -194,27 +229,58 @@ export default function ChatScreen({
     }, 50);
   }, [scrollToEnd]);
 
-  const sendMessage = () => {
+  const sendMessage = useCallback(async () => {
     const t = inputText.trim();
-    if (!t) return;
+    if (!t || isSending) return;
+
     const userMsgId = String(Date.now());
     const typingId = userMsgId + '_typing';
+
     setInputText('');
-    setMessages((prev) => [
+    setIsSending(true);
+    onMessagesChange((prev) => [
       ...prev,
       { id: userMsgId, text: t, isUser: true },
       { id: typingId, isUser: false, isTyping: true },
     ]);
-    setTimeout(() => {
-      setMessages((prev) =>
+
+    try {
+      const data = await testPromptAgent(t);
+      const reply = data?.response ?? '…';
+      onMessagesChange((prev) =>
+        prev.map((m) =>
+          m.id === typingId ? { ...m, isTyping: false, text: reply } : m
+        )
+      );
+    } catch (e) {
+      const errText = e?.message || 'Ошибка — попробуйте ещё раз';
+      onMessagesChange((prev) =>
         prev.map((m) =>
           m.id === typingId
-            ? { ...m, isTyping: false, text: 'Сообщение получено. (Это mock-ответ.)' }
+            ? { ...m, isTyping: false, text: errText, isError: true }
             : m
         )
       );
-    }, 1200 + Math.random() * 800);
-  };
+    } finally {
+      setIsSending(false);
+    }
+  }, [inputText, isSending, onMessagesChange]);
+
+  const handleResetHistory = useCallback(async () => {
+    if (isSending || isResetting) return;
+    setIsResetting(true);
+    try {
+      await resetTestPromptHistory();
+      onMessagesChange([]);
+    } catch (e) {
+      Alert.alert(
+        'Не удалось сбросить',
+        e?.message || 'Попробуйте ещё раз',
+      );
+    } finally {
+      setIsResetting(false);
+    }
+  }, [isSending, isResetting, onMessagesChange]);
 
   const headerBlock = (
     <View style={styles.header}>
@@ -248,6 +314,20 @@ export default function ChatScreen({
           </Text>
         ) : null}
       </View>
+      <Pressable
+        onPress={handleResetHistory}
+        style={({ pressed }) => [
+          styles.headerResetBtn,
+          (isSending || isResetting) && styles.headerResetBtnDisabled,
+          pressed && !(isSending || isResetting) && styles.headerResetBtnPressed,
+        ]}
+        disabled={isSending || isResetting}
+        accessibilityRole="button"
+        accessibilityLabel="Сбросить историю тестового чата"
+        accessibilityState={{ disabled: isSending || isResetting }}
+      >
+        <Ionicons name="refresh-outline" size={24} color={WA.backIcon} />
+      </Pressable>
     </View>
   );
 
@@ -264,7 +344,11 @@ export default function ChatScreen({
           key={msg.id}
           style={[styles.bubbleWrap, msg.isUser ? styles.bubbleWrapUser : styles.bubbleWrapBot]}
         >
-          <View style={[styles.bubble, msg.isUser ? styles.bubbleUser : styles.bubbleBot]}>
+          <View style={[
+            styles.bubble,
+            msg.isUser ? styles.bubbleUser : styles.bubbleBot,
+            msg.isError && styles.bubbleError,
+          ]}>
             {msg.isTyping ? (
               <TypingDots />
             ) : (
@@ -295,21 +379,23 @@ export default function ChatScreen({
           Настроить агента
         </Text>
       </Pressable>
-      <Pressable
-        onPress={onConnectWhatsApp}
-        style={({ pressed }) => [
-          styles.quickActionBtn,
-          styles.quickActionBtnWaFilled,
-          pressed && styles.quickActionBtnWaFilledPressed,
-        ]}
-        accessibilityRole="button"
-        accessibilityLabel="Подключить WhatsApp"
-      >
-        <Ionicons name="logo-whatsapp" size={18} color="#fff" />
-        <Text style={styles.quickActionTextFilled} numberOfLines={1}>
-          Подключить
-        </Text>
-      </Pressable>
+      {showConnectWhatsApp ? (
+        <Pressable
+          onPress={onConnectWhatsApp}
+          style={({ pressed }) => [
+            styles.quickActionBtn,
+            styles.quickActionBtnWaFilled,
+            pressed && styles.quickActionBtnWaFilledPressed,
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Подключить WhatsApp"
+        >
+          <Ionicons name="logo-whatsapp" size={18} color="#fff" />
+          <Text style={styles.quickActionTextFilled} numberOfLines={1}>
+            Подключить
+          </Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 
@@ -424,6 +510,16 @@ const styles = StyleSheet.create({
     minWidth: 0,
     justifyContent: 'center',
   },
+  headerResetBtn: {
+    padding: 8,
+    marginLeft: 4,
+  },
+  headerResetBtnDisabled: {
+    opacity: 0.45,
+  },
+  headerResetBtnPressed: {
+    opacity: 0.75,
+  },
   headerTitle: {
     fontSize: 18,
     fontWeight: '700',
@@ -509,6 +605,9 @@ const styles = StyleSheet.create({
   bubbleBot: {
     backgroundColor: WA.receivedBubble,
     borderBottomLeftRadius: 4,
+  },
+  bubbleError: {
+    backgroundColor: '#fee2e2',
   },
   bubbleUser: {
     backgroundColor: WA.sentBubble,

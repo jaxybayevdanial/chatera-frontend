@@ -1,5 +1,16 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import {
+  createSession,
+  createInstagramBot,
+  searchInstagramUsers,
+  fetchSession,
+  fetchBots,
+  getBotIdFromSession,
+  getBotPhoneNumberFromSession,
+  isWhatsAppLinkedForBot,
+  buildResumeAccountFromSession,
+} from './api/chatera';
+import {
   StyleSheet,
   Text,
   View,
@@ -22,24 +33,6 @@ import CreateAgentScreen from './screens/CreateAgentScreen';
 import ChatScreen from './screens/ChatScreen';
 import MainTabsScreen from './screens/MainTabsScreen';
 import WaConnectScreen from './screens/WaConnectScreen';
-
-const USE_MOCK = true;
-const MOCK_USERS = [
-  { id: '1', username: 'my_business', fullName: 'Мой бизнес', profilePicUrl: null },
-  { id: '2', username: 'coffee_shop_spb', fullName: 'Кофейня СПб', profilePicUrl: null },
-  { id: '3', username: 'flower_studio', fullName: 'Студия цветов', profilePicUrl: null },
-  { id: '4', username: 'fitness_pro', fullName: 'Фитнес тренер', profilePicUrl: null },
-  { id: '5', username: 'travel_blogger', fullName: 'Путешествия', profilePicUrl: null },
-  { id: '6', username: 'photo_studio', fullName: 'Фотостудия', profilePicUrl: null },
-];
-
-function getMockSearchResults(query) {
-  const q = (query || '').trim().toLowerCase();
-  if (!q) return [];
-  return MOCK_USERS.filter(
-    (u) => u.username.toLowerCase().includes(q) || (u.fullName && u.fullName.toLowerCase().includes(q)),
-  );
-}
 
 const DEBOUNCE_MS = 900;
 const IS_WEB = Platform.OS === 'web';
@@ -123,12 +116,63 @@ export default function App() {
   const [viewState, setViewState] = useState('home');
   const [mainTabsMountId, setMainTabsMountId] = useState(0);
   const [mainStartTab, setMainStartTab] = useState('settings');
+  /** Пока не ответил POST /api/session — чтобы не мигал экран выбора, если в куки уже есть агент */
+  const [sessionBootReady, setSessionBootReady] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const sessionPayload = await createSession();
+        if (
+          !cancelled &&
+          sessionPayload &&
+          getBotIdFromSession(sessionPayload)
+        ) {
+          setSelectedAccount(buildResumeAccountFromSession(sessionPayload));
+          setMainStartTab('settings');
+          setViewState('main');
+        }
+      } catch {
+        /* не блокируем UI */
+      }
+      try {
+        if (!cancelled) await fetchBots();
+      } catch {
+        /* опционально */
+      }
+      if (!cancelled) setSessionBootReady(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [dialogsAutoOpenLinkModal, setDialogsAutoOpenLinkModal] = useState(false);
   const [webOverlayChatOpen, setWebOverlayChatOpen] = useState(false);
-  /** WA подключён (общий для табов и чата) */
-  const [waConnected, setWaConnected] = useState(false);
   /** Подключение WA поверх чата — без ухода на вкладку Диалоги */
   const [waConnectOverChat, setWaConnectOverChat] = useState(false);
+  const [isWhatsAppLinked, setIsWhatsAppLinked] = useState(false);
+  /** История тестового чата — живёт в App, чтобы не терялась при закрытии чата */
+  const [testChatMessages, setTestChatMessages] = useState([]);
+
+  const refreshWhatsAppLinked = useCallback(async () => {
+    try {
+      const session = await fetchSession();
+      const fromSession = getBotPhoneNumberFromSession(session);
+      if (fromSession) {
+        setIsWhatsAppLinked(true);
+        return;
+      }
+      const botsRes = await fetchBots();
+      const firstBot =
+        Array.isArray(botsRes?.bots) && botsRes.bots.length > 0
+          ? botsRes.bots[0]
+          : null;
+      setIsWhatsAppLinked(isWhatsAppLinkedForBot(firstBot));
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   const openMain = useCallback((tab = 'settings', opts = {}) => {
     setMainStartTab(tab);
@@ -159,15 +203,27 @@ export default function App() {
     }
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      lastQueryRef.current = q;
-      setLoading(true);
-      setError(null);
-      let list = getMockSearchResults(q);
-      if (list.length === 0 && USE_MOCK) list = MOCK_USERS;
-      if (lastQueryRef.current === q) {
-        setResults(list);
-        setLoading(false);
-      }
+      (async () => {
+        lastQueryRef.current = q;
+        setLoading(true);
+        setError(null);
+        try {
+          const list = await searchInstagramUsers(q);
+          if (lastQueryRef.current === q) {
+            setResults(list);
+            setError(null);
+          }
+        } catch (e) {
+          if (lastQueryRef.current === q) {
+            setResults([]);
+            setError(e?.message || 'Не удалось выполнить поиск');
+          }
+        } finally {
+          if (lastQueryRef.current === q) {
+            setLoading(false);
+          }
+        }
+      })();
     }, DEBOUNCE_MS);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -181,10 +237,16 @@ export default function App() {
     setSearchQuery(account.username);
     Keyboard.dismiss();
     setSelectedAccount(account);
-    setWaConnected(false);
     setWaConnectOverChat(false);
+    setTestChatMessages([]);
     setViewState('creating');
+    createInstagramBot(account.username).catch(() => {});
   }, []);
+  useEffect(() => {
+    if (viewState === 'main' || viewState === 'chat') {
+      refreshWhatsAppLinked();
+    }
+  }, [viewState, refreshWhatsAppLinked]);
 
   if (viewState === 'main' && selectedAccount) {
     if (IS_WEB) {
@@ -193,8 +255,6 @@ export default function App() {
           <MainTabsScreen
             key={mainTabsMountId}
             account={selectedAccount}
-            waConnected={waConnected}
-            onWaConnected={() => setWaConnected(true)}
             onTest={() => {
               setWaConnectOverChat(false);
               setWebOverlayChatOpen(true);
@@ -215,17 +275,20 @@ export default function App() {
                 <View style={styles.chatWaHost}>
                   <ChatScreen
                     account={selectedAccount}
+                    messages={testChatMessages}
+                    onMessagesChange={setTestChatMessages}
                     onBack={() => close()}
                     onConfigureAgent={() => close(() => openMain('settings'))}
                     onConnectWhatsApp={() => setWaConnectOverChat(true)}
+                    showConnectWhatsApp={!isWhatsAppLinked}
                   />
                   {waConnectOverChat ? (
                     <View style={styles.waOverChat}>
                       <WaConnectScreen
                         onClose={() => setWaConnectOverChat(false)}
                         onSuccess={() => {
-                          setWaConnected(true);
                           setWaConnectOverChat(false);
+                          setIsWhatsAppLinked(true);
                           close(() => openMain('dialogs'));
                         }}
                       />
@@ -242,8 +305,6 @@ export default function App() {
       <MainTabsScreen
         key={mainTabsMountId}
         account={selectedAccount}
-        waConnected={waConnected}
-        onWaConnected={() => setWaConnected(true)}
         onTest={() => {
           setWaConnectOverChat(false);
           setViewState('chat');
@@ -263,17 +324,20 @@ export default function App() {
             <View style={styles.chatWaHost}>
               <ChatScreen
                 account={selectedAccount}
+                messages={testChatMessages}
+                onMessagesChange={setTestChatMessages}
                 onBack={() => close(() => openMain('settings'))}
                 onConfigureAgent={() => close(() => openMain('settings'))}
                 onConnectWhatsApp={() => setWaConnectOverChat(true)}
+                showConnectWhatsApp={!isWhatsAppLinked}
               />
               {waConnectOverChat ? (
                 <View style={styles.waOverChat}>
                   <WaConnectScreen
                     onClose={() => setWaConnectOverChat(false)}
                     onSuccess={() => {
-                      setWaConnected(true);
                       setWaConnectOverChat(false);
+                      setIsWhatsAppLinked(true);
                       close(() => openMain('dialogs'));
                     }}
                   />
@@ -288,17 +352,20 @@ export default function App() {
       <View style={styles.chatWaHost}>
         <ChatScreen
           account={selectedAccount}
+          messages={testChatMessages}
+          onMessagesChange={setTestChatMessages}
           onBack={() => openMain('settings')}
           onConfigureAgent={() => openMain('settings')}
           onConnectWhatsApp={() => setWaConnectOverChat(true)}
+          showConnectWhatsApp={!isWhatsAppLinked}
         />
         {waConnectOverChat ? (
           <View style={styles.waOverChat}>
             <WaConnectScreen
               onClose={() => setWaConnectOverChat(false)}
               onSuccess={() => {
-                setWaConnected(true);
                 setWaConnectOverChat(false);
+                setIsWhatsAppLinked(true);
                 openMain('dialogs');
               }}
             />
@@ -314,6 +381,23 @@ export default function App() {
         account={selectedAccount}
         onComplete={() => setViewState('chat')}
       />
+    );
+  }
+
+  if (!sessionBootReady) {
+    return (
+      <View style={styles.container}>
+        <StatusBar style="dark" />
+        <LinearGradient
+          colors={['#FFFFFF', '#E0F2FE', '#93C5FD', '#3B82F6']}
+          locations={[0, 0.35, 0.65, 1]}
+          style={StyleSheet.absoluteFill}
+        />
+        <View style={styles.bootSplash}>
+          <ChateraLogo width={48} style={styles.bootLogo} />
+          <ActivityIndicator size="large" color="#2563EB" style={styles.bootSpinner} />
+        </View>
+      </View>
     );
   }
 
@@ -451,6 +535,17 @@ const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
+  },
+  bootSplash: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bootLogo: {
+    marginBottom: 24,
+  },
+  bootSpinner: {
+    marginTop: 4,
   },
   content: {
     flex: 1,

@@ -5,13 +5,12 @@ import { Ionicons } from '@expo/vector-icons';
 import AgentSettingsScreen from './AgentSettingsScreen';
 import DialogsScreen from './DialogsScreen';
 import WaConnectScreen from './WaConnectScreen';
-import ProfileScreen from './ProfileScreen';
+import WaChatScreen from './WaChatScreen';
 
 /** Только outline; активная вкладка — цвет + чуть больший размер, без filled-иконок */
 const TABS = [
   { key: 'settings', label: 'Агент', icon: 'settings-outline' },
   { key: 'dialogs', label: 'Диалоги', icon: 'chatbubble-ellipses-outline' },
-  { key: 'profile', label: 'Профиль', icon: 'person-circle-outline' },
 ];
 
 export default function MainTabsScreen({
@@ -20,10 +19,9 @@ export default function MainTabsScreen({
   initialTab = 'settings',
   dialogsAutoOpenLinkModal = false,
   onDialogsAutoOpenLinkConsumed,
-  waConnected = false,
-  onWaConnected,
 }) {
   const [activeTab, setActiveTab] = useState(initialTab);
+  const [waThread, setWaThread] = useState(null);
   const [waConnectOpen, setWaConnectOpen] = useState(
     () => Boolean(dialogsAutoOpenLinkModal),
   );
@@ -45,8 +43,7 @@ export default function MainTabsScreen({
         <Text style={styles.headerTitle}>
           {activeTab === 'settings' && 'Агент'}
           {activeTab === 'dialogs' &&
-            (waConnectOpen && !waConnected ? 'Подключение WhatsApp' : 'Диалоги')}
-          {activeTab === 'profile' && 'Профиль'}
+            (waConnectOpen ? 'Подключение WhatsApp' : 'Диалоги')}
         </Text>
         {activeTab === 'settings' && (
           <Pressable
@@ -59,26 +56,37 @@ export default function MainTabsScreen({
             <Text style={styles.testBtnText}>Протестировать</Text>
           </Pressable>
         )}
+        {activeTab === 'dialogs' && !waConnectOpen ? <View /> : null}
       </View>
 
       <View style={styles.content}>
         {activeTab === 'settings' && <AgentSettingsScreen account={account} />}
         {activeTab === 'dialogs' &&
-          (waConnected ? (
-            <DialogsScreen waConnected onOpenConnect={openWaConnect} />
-          ) : waConnectOpen ? (
+          (waConnectOpen ? (
             <WaConnectScreen
               onClose={closeWaConnect}
               onSuccess={() => {
-                onWaConnected?.();
                 closeWaConnect();
               }}
             />
           ) : (
-            <DialogsScreen waConnected={false} onOpenConnect={openWaConnect} />
+            <DialogsScreen
+              onOpenConnect={openWaConnect}
+              onOpenThread={setWaThread}
+            />
           ))}
-        {activeTab === 'profile' && <ProfileScreen />}
       </View>
+
+      {waThread ? (
+        <View style={styles.waThreadOverlay} accessibilityViewIsModal>
+          <WaChatScreen
+            botId={waThread.botId}
+            chatId={waThread.chatId}
+            initialTitle={waThread.title}
+            onBack={() => setWaThread(null)}
+          />
+        </View>
+      ) : null}
 
       {/* Вариант: зелёная кнопка sticky над tab bar. Раскомментировать блок ниже
           и при желании убрать Pressable «Протестировать» из header выше.
@@ -163,8 +171,22 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#ffffff',
   },
+  dialogsWaBtn: {
+    padding: 8,
+    borderRadius: 10,
+    backgroundColor: '#ECFDF5',
+  },
   content: {
     flex: 1,
+  },
+  waThreadOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#efeae2',
+    zIndex: 100,
+    ...(Platform.OS === 'android' ? { elevation: 24 } : {}),
+    ...(Platform.OS === 'web'
+      ? { boxShadow: '0 0 0 1px rgba(0,0,0,0.06)' }
+      : {}),
   },
   stickyTestBar: {
     backgroundColor: '#ffffff',

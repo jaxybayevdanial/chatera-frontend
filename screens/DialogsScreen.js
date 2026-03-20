@@ -1,90 +1,306 @@
-import React from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   StyleSheet,
   Text,
   View,
   Pressable,
-  ScrollView,
+  FlatList,
+  RefreshControl,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import {
+  fetchSession,
+  getBotIdFromSession,
+  getBotPhoneNumberFromSession,
+  fetchBots,
+  getFirstBotIdFromBots,
+  isWhatsAppLinkedForBot,
+  fetchBotChats,
+  errorMeansRegistrationRequired,
+} from '../api/chatera';
+import RegisterAccountModal from '../components/RegisterAccountModal';
 
-const MOCK_DIALOGS = [
-  { id: '1', name: 'Алексей К.', lastMessage: 'Здравствуйте, хотел узнать про доставку', time: '14:32', unread: 2 },
-  { id: '2', name: 'Мария С.', lastMessage: 'Спасибо, заказ оформлен!', time: '13:10', unread: 0 },
-  { id: '3', name: 'Иван П.', lastMessage: 'А можно примерить перед покупкой?', time: '12:45', unread: 1 },
-  { id: '4', name: 'Елена В.', lastMessage: 'Подскажите, есть ли скидки?', time: 'Вчера', unread: 0 },
-  { id: '5', name: 'Дмитрий Р.', lastMessage: 'Когда будет доступен этот товар?', time: 'Вчера', unread: 0 },
-];
+function formatListTime(iso) {
+  if (iso == null || iso === '') return '';
+  const d = new Date(iso);
+  if (Number.isNaN(+d)) return '';
+  const today = new Date();
+  const isToday = d.toDateString() === today.toDateString();
+  return isToday
+    ? d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+    : d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
+}
 
-export default function DialogsScreen({ waConnected, onOpenConnect }) {
-  if (!waConnected) {
+function dialogTitle(item) {
+  const n =
+    (typeof item?.chatName === 'string' && item.chatName.trim()) ||
+    (typeof item?.senderName === 'string' && item.senderName.trim());
+  if (n) return n;
+  return item?.chatId != null ? String(item.chatId) : 'Чат';
+}
+
+function dialogInitial(name) {
+  const c = (name || '?').trim().charAt(0);
+  return c ? c.toUpperCase() : '?';
+}
+
+export default function DialogsScreen({
+  onOpenConnect,
+  onOpenThread,
+}) {
+  const [botId, setBotId] = useState(null);
+  const [items, setItems] = useState([]);
+  const [hasMore, setHasMore] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState(null);
+  const [needsRegistration, setNeedsRegistration] = useState(false);
+  const [registerModalVisible, setRegisterModalVisible] = useState(false);
+  const [isWhatsAppLinked, setIsWhatsAppLinked] = useState(false);
+  const loadLock = useRef(false);
+  const pageRef = useRef(1);
+
+  const resolveBotId = useCallback(async () => {
+    const session = await fetchSession();
+    setIsWhatsAppLinked(Boolean(getBotPhoneNumberFromSession(session)));
+    const fromSession = getBotIdFromSession(session);
+    if (fromSession) return fromSession;
+    const botsRes = await fetchBots();
+    const firstBot =
+      Array.isArray(botsRes?.bots) && botsRes.bots.length > 0
+        ? botsRes.bots[0]
+        : null;
+    if (firstBot) setIsWhatsAppLinked(isWhatsAppLinkedForBot(firstBot));
+    return getFirstBotIdFromBots(botsRes);
+  }, []);
+
+  const loadPage = useCallback(
+    async (pageNum, { append } = { append: false }) => {
+      const id = await resolveBotId();
+      if (!id) {
+        setNeedsRegistration(false);
+        setError('Сначала создайте агента — бот не найден в сессии.');
+        setItems([]);
+        setHasMore(false);
+        return;
+      }
+      setBotId(id);
+      const res = await fetchBotChats(id, { page: pageNum, limit: 25 });
+      const data = res?.data;
+      const chunk = Array.isArray(data?.items) ? data.items : [];
+      const more = Boolean(data?.hasMore);
+      if (append) {
+        setItems((prev) => [...prev, ...chunk]);
+      } else {
+        setItems(chunk);
+      }
+      setHasMore(more);
+      pageRef.current = pageNum;
+      setError(null);
+      setNeedsRegistration(false);
+    },
+    [resolveBotId],
+  );
+
+  const loadInitial = useCallback(async () => {
+    setLoading(true);
+    try {
+      await loadPage(1, { append: false });
+    } catch (e) {
+      if (errorMeansRegistrationRequired(e)) {
+        setNeedsRegistration(true);
+        setError(null);
+      } else {
+        setNeedsRegistration(false);
+        setError(e?.message || 'Не удалось загрузить диалоги');
+      }
+      setItems([]);
+      setHasMore(false);
+    } finally {
+      setLoading(false);
+    }
+  }, [loadPage]);
+
+  useEffect(() => {
+    loadInitial();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await loadPage(1, { append: false });
+    } catch (e) {
+      if (errorMeansRegistrationRequired(e)) {
+        setNeedsRegistration(true);
+        setError(null);
+      } else {
+        setNeedsRegistration(false);
+        setError(e?.message || 'Не удалось обновить');
+      }
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadPage]);
+
+  const loadMore = useCallback(async () => {
+    if (!hasMore || loading || loadingMore || refreshing || loadLock.current) return;
+    loadLock.current = true;
+    setLoadingMore(true);
+    try {
+      await loadPage(pageRef.current + 1, { append: true });
+    } catch {
+      /* тихо — можно повторить pull-to-refresh */
+    } finally {
+      setLoadingMore(false);
+      loadLock.current = false;
+    }
+  }, [hasMore, loading, loadingMore, refreshing, loadPage]);
+
+  const openChat = useCallback(
+    (row) => {
+      const id = botId || null;
+      if (!id || !row?.chatId) return;
+      onOpenThread?.({
+        botId: id,
+        chatId: String(row.chatId),
+        title: dialogTitle(row),
+      });
+    },
+    [botId, onOpenThread],
+  );
+
+  if (loading && items.length === 0 && !needsRegistration) {
     return (
-      <View style={styles.container}>
-        <View style={styles.emptyState}>
-          <View style={styles.emptyIconCircle}>
-            <Ionicons name="logo-whatsapp" size={48} color="#25D366" />
-          </View>
-          <Text style={styles.emptyTitle}>Подключите WhatsApp</Text>
-          <Text style={styles.emptyDescription}>
-            Привяжите номер, чтобы AI-менеджер начал отвечать клиентам. Все диалоги появятся здесь.
-          </Text>
-          <Pressable
-            onPress={onOpenConnect}
-            style={styles.connectBtn}
-            accessibilityRole="button"
-            accessibilityLabel="Привязать WhatsApp"
-          >
-            <Ionicons name="logo-whatsapp" size={20} color="#fff" />
-            <Text style={styles.connectBtnText}>Привязать WhatsApp</Text>
-          </Pressable>
-        </View>
+      <View style={styles.centerWrap}>
+        <ActivityIndicator size="large" color="#2563EB" />
+        <Text style={styles.loadingText}>Загрузка диалогов…</Text>
       </View>
     );
   }
 
+  if (error && !needsRegistration && items.length === 0) {
+    return (
+      <View style={styles.centerWrap}>
+        <Ionicons name="alert-circle-outline" size={48} color="#DC2626" />
+        <Text style={styles.errorText}>{error}</Text>
+        <Pressable onPress={loadInitial} style={styles.retryBtn} accessibilityRole="button">
+          <Text style={styles.retryBtnText}>Повторить</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  const renderItem = ({ item }) => {
+    const name = dialogTitle(item);
+    const t = formatListTime(item?.updatedAt || item?.createdAt);
+    return (
+      <Pressable
+        onPress={() => openChat(item)}
+        style={({ pressed }) => [styles.dialogRow, pressed && styles.dialogRowPressed]}
+        accessibilityRole="button"
+        accessibilityLabel={`Диалог с ${name}`}
+      >
+        <View style={styles.dialogAvatar}>
+          <Text style={styles.dialogAvatarText}>{dialogInitial(name)}</Text>
+        </View>
+        <View style={styles.dialogBody}>
+          <View style={styles.dialogTopRow}>
+            <Text style={styles.dialogName} numberOfLines={1}>
+              {name}
+            </Text>
+            <Text style={styles.dialogTime}>{t}</Text>
+          </View>
+          <View style={styles.badgesRow}>
+            {item?.isManualMode ? (
+              <View style={styles.badgeManual}>
+                <Text style={styles.badgeManualText}>Вручную</Text>
+              </View>
+            ) : null}
+            {item?.isWaitingManager ? (
+              <View style={styles.badgeWait}>
+                <Text style={styles.badgeWaitText}>Ждёт менеджера</Text>
+              </View>
+            ) : null}
+          </View>
+        </View>
+        <Ionicons name="chevron-forward" size={20} color="#D1D5DB" />
+      </Pressable>
+    );
+  };
+
   return (
     <View style={styles.container}>
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
+      <FlatList
+        data={items}
+        keyExtractor={(it) => String(it?._id ?? it?.chatId)}
+        renderItem={renderItem}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#2563EB" />
+        }
+        onEndReached={loadMore}
+        onEndReachedThreshold={0.35}
+        ListEmptyComponent={
+          <View style={styles.centerWrap}>
+            <Ionicons name="chatbubbles-outline" size={48} color="#9CA3AF" />
+            <Text style={styles.emptyListText}>
+              {needsRegistration ? 'Диалоги пока недоступны' : 'Пока нет диалогов'}
+            </Text>
+            <Text style={styles.emptyListHint}>
+              {needsRegistration
+                ? 'Создайте аккаунт — и подлкючите ваш WhatsApp.'
+                : 'Когда клиенты напишут в WhatsApp, переписки появятся здесь.'}
+            </Text>
+            {needsRegistration ? (
+              <Pressable
+                onPress={() => setRegisterModalVisible(true)}
+                style={({ pressed }) => [
+                  styles.createAccountBtn,
+                  pressed && styles.createAccountBtnPressed,
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Создать аккаунт"
+              >
+                <Text style={styles.createAccountBtnText}>Создать аккаунт</Text>
+              </Pressable>
+            ) : null}
+            {!needsRegistration && !isWhatsAppLinked && onOpenConnect ? (
+              <Pressable
+                onPress={onOpenConnect}
+                style={styles.connectBtnMuted}
+                accessibilityRole="button"
+                accessibilityLabel="Привязать или проверить WhatsApp"
+              >
+                <Ionicons name="logo-whatsapp" size={18} color="#fff" style={styles.connectBtnIcon} />
+                <Text style={styles.connectBtnText}>Привязать WhatsApp</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        }
+        ListFooterComponent={
+          loadingMore ? (
+            <View style={styles.footerLoader}>
+              <ActivityIndicator color="#2563EB" />
+            </View>
+          ) : null
+        }
+        contentContainerStyle={
+          items.length === 0 ? styles.flatEmptyContent : styles.flatContent
+        }
         showsVerticalScrollIndicator={false}
-      >
-        {MOCK_DIALOGS.map((dialog) => (
-          <Pressable
-            key={dialog.id}
-            style={({ pressed }) => [
-              styles.dialogRow,
-              pressed && styles.dialogRowPressed,
-            ]}
-            accessibilityRole="button"
-            accessibilityLabel={`Диалог с ${dialog.name}`}
-          >
-            <View style={styles.dialogAvatar}>
-              <Text style={styles.dialogAvatarText}>
-                {dialog.name.charAt(0)}
-              </Text>
-            </View>
-            <View style={styles.dialogBody}>
-              <View style={styles.dialogTopRow}>
-                <Text style={styles.dialogName} numberOfLines={1}>
-                  {dialog.name}
-                </Text>
-                <Text style={styles.dialogTime}>{dialog.time}</Text>
-              </View>
-              <View style={styles.dialogBottomRow}>
-                <Text style={styles.dialogMessage} numberOfLines={1}>
-                  {dialog.lastMessage}
-                </Text>
-                {dialog.unread > 0 && (
-                  <View style={styles.unreadBadge}>
-                    <Text style={styles.unreadBadgeText}>{dialog.unread}</Text>
-                  </View>
-                )}
-              </View>
-            </View>
-          </Pressable>
-        ))}
-      </ScrollView>
+      />
+
+      <RegisterAccountModal
+        visible={registerModalVisible}
+        onClose={() => setRegisterModalVisible(false)}
+        onRegistered={() => {
+          setRegisterModalVisible(false);
+          setNeedsRegistration(false);
+          loadInitial();
+        }}
+      />
     </View>
   );
 }
@@ -94,49 +310,90 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#F3F4F6',
   },
-  scroll: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingBottom: 24,
-  },
-  emptyState: {
+  centerWrap: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 32,
+    paddingVertical: 48,
   },
-  emptyIconCircle: {
-    width: 96,
-    height: 96,
-    borderRadius: 48,
-    backgroundColor: '#ECFDF5',
+  loadingText: {
+    marginTop: 12,
+    fontSize: 15,
+    color: '#6B7280',
+  },
+  errorText: {
+    marginTop: 12,
+    fontSize: 15,
+    color: '#B91C1C',
+    textAlign: 'center',
+  },
+  createAccountBtn: {
+    backgroundColor: '#2563EB',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 24,
+    marginTop: 14,
+    marginBottom: 10,
+    minWidth: 220,
   },
-  emptyTitle: {
-    fontSize: 22,
+  createAccountBtnPressed: {
+    backgroundColor: '#1D4ED8',
+  },
+  createAccountBtnText: {
+    color: '#fff',
     fontWeight: '700',
-    color: '#111827',
-    marginBottom: 8,
+    fontSize: 16,
   },
-  emptyDescription: {
+  retryBtn: {
+    marginTop: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    backgroundColor: '#2563EB',
+    borderRadius: 12,
+  },
+  retryBtnText: {
+    color: '#fff',
+    fontWeight: '700',
     fontSize: 15,
-    lineHeight: 22,
+  },
+  flatContent: {
+    paddingBottom: 24,
+  },
+  flatEmptyContent: {
+    flexGrow: 1,
+  },
+  emptyListText: {
+    marginTop: 12,
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#374151',
+  },
+  emptyListHint: {
+    marginTop: 8,
+    fontSize: 14,
     color: '#6B7280',
     textAlign: 'center',
-    marginBottom: 28,
-    maxWidth: 300,
+    lineHeight: 20,
+    maxWidth: 280,
   },
-  connectBtn: {
+  footerLoader: {
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  connectBtnMuted: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    marginTop: 20,
     backgroundColor: '#25D366',
-    borderRadius: 14,
-    paddingVertical: 16,
-    paddingHorizontal: 28,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 22,
+  },
+  connectBtnIcon: {
+    marginRight: 8,
   },
   connectBtnText: {
     fontSize: 17,
@@ -190,28 +447,34 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#9CA3AF',
   },
-  dialogBottomRow: {
+  badgesRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
   },
-  dialogMessage: {
-    fontSize: 14,
-    color: '#6B7280',
-    flex: 1,
-    marginRight: 8,
+  badgeManual: {
+    backgroundColor: '#FEF3C7',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    marginRight: 6,
+    marginTop: 2,
   },
-  unreadBadge: {
-    minWidth: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: '#3B82F6',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 6,
+  badgeManualText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#B45309',
   },
-  unreadBadgeText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#ffffff',
+  badgeWait: {
+    backgroundColor: '#FEE2E2',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    marginTop: 2,
+  },
+  badgeWaitText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#B91C1C',
   },
 });

@@ -4,6 +4,7 @@ import React, {
   useEffect,
   useLayoutEffect,
   useRef,
+  useMemo,
 } from 'react';
 import {
   StyleSheet,
@@ -17,23 +18,42 @@ import {
   ActivityIndicator,
   Keyboard,
   Alert,
+  Animated,
+  Easing,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
-
-function generatePairCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let a = '',
-    b = '';
-  for (let i = 0; i < 4; i++) {
-    a += chars[Math.floor(Math.random() * chars.length)];
-    b += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return `${a}-${b}`;
-}
+import { AsYouType, parsePhoneNumberFromString } from 'libphonenumber-js';
+import {
+  fetchSession,
+  getBotIdFromSession,
+  fetchAuthMe,
+  linkBotWhatsApp,
+  errorMeansRegistrationRequired,
+} from '../api/chatera';
+import RegisterAccountModal from '../components/RegisterAccountModal';
 
 function digitsOnly(s) {
   return (s || '').replace(/\D/g, '');
+}
+
+function sanitizePhoneInput(value) {
+  const s = String(value ?? '');
+  const digits = digitsOnly(s);
+  if (!digits) return '';
+  // E.164 max length is 15 digits (excluding plus).
+  return `+${digits.slice(0, 15)}`;
+}
+
+/** Код привязки как value: первые 4 символа + «-» + остаток (буквы/цифры). */
+function formatPairCodeValue(raw) {
+  const s = String(raw ?? '').trim();
+  if (!s) return '';
+  const alnum = s.replace(/[^a-zA-Z0-9]/g, '');
+  if (alnum.length === 0) return s;
+  const first = alnum.slice(0, 4);
+  const rest = alnum.slice(4);
+  return rest.length ? `${first}-${rest}` : first;
 }
 
 function formatPhoneDisplay(d) {
@@ -55,6 +75,119 @@ function formatPhoneDisplay(d) {
 
 const IS_WEB = Platform.OS === 'web';
 
+const LINK_WAIT_TIPS = [
+  'Запрос обрабатывается на стороне WhatsApp — обычно это 1–2 минуты. Всё идёт по плану.',
+  'Можно ненадолго свернуть экран: когда сервис ответит, вы автоматически перейдёте к коду.',
+  'Проверьте: на этом номере установлен WhatsApp и есть стабильный интернет.',
+  'Подключение идёт через официальный канал интеграции — пароль от аккаунта не нужен.',
+  'Если ждёте дольше 2 минут — нажмите «Отменить» и попробуйте снова чуть позже.',
+];
+
+function WaLinkWaitPulse() {
+  const scale = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    const a = Animated.loop(
+      Animated.sequence([
+        Animated.timing(scale, {
+          toValue: 1.12,
+          duration: 1000,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(scale, {
+          toValue: 1,
+          duration: 1000,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    a.start();
+    return () => a.stop();
+  }, [scale]);
+  return (
+    <Animated.View style={[styles.waWaitIconRing, { transform: [{ scale }] }]}>
+      <View style={styles.waWaitIconInner}>
+        <Ionicons name="logo-whatsapp" size={44} color="#fff" />
+      </View>
+    </Animated.View>
+  );
+}
+
+function WaLinkShimmerBar() {
+  const x = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const a = Animated.loop(
+      Animated.sequence([
+        Animated.timing(x, {
+          toValue: 1,
+          duration: 1400,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(x, {
+          toValue: 0,
+          duration: 0,
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    a.start();
+    return () => a.stop();
+  }, [x]);
+  const translateX = x.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-140, 260],
+  });
+  return (
+    <View style={styles.waShimmerTrack}>
+      <Animated.View style={[styles.waShimmerFill, { transform: [{ translateX }] }]} />
+    </View>
+  );
+}
+
+function WaLinkWaitView({ onCancel }) {
+  const [tipIdx, setTipIdx] = useState(0);
+  useEffect(() => {
+    const iv = setInterval(() => {
+      setTipIdx((i) => (i + 1) % LINK_WAIT_TIPS.length);
+    }, 6500);
+    return () => clearInterval(iv);
+  }, []);
+
+  return (
+    <View style={styles.waWaitRoot}>
+      <Text style={styles.phaseLabel}>Шаг 1 — подождите</Text>
+      <Text style={styles.waWaitTitle}>Связываем номер с WhatsApp</Text>
+      <Text style={styles.waWaitLead}>
+        Это занимает примерно{' '}
+        <Text style={styles.waWaitLeadBold}>1–2 минуты</Text>. Не закрывайте
+        экран, пока не появится код.
+      </Text>
+
+      <View style={styles.waWaitVisual}>
+        <WaLinkWaitPulse />
+        <WaLinkShimmerBar />
+        <Text style={styles.waWaitHint} accessibilityLiveRegion="polite">
+          {LINK_WAIT_TIPS[tipIdx]}
+        </Text>
+      </View>
+
+      <Pressable
+        onPress={onCancel}
+        style={({ pressed }) => [
+          styles.waWaitCancelBtn,
+          pressed && styles.btnPressed,
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel="Отменить ожидание"
+      >
+        <Text style={styles.waWaitCancelText}>Отменить</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 function resetWaPageScroll() {
   if (typeof window === 'undefined') return;
   window.scrollTo(0, 0);
@@ -62,14 +195,77 @@ function resetWaPageScroll() {
   document.body.scrollTop = 0;
 }
 
-export default function WaConnectScreen({ onClose, onSuccess }) {
+export default function WaConnectScreen({
+  onClose,
+  onSuccess,
+  botId: botIdProp,
+}) {
   const [step, setStep] = useState(1);
-  const [phoneDigits, setPhoneDigits] = useState('7');
+  const [phoneText, setPhoneText] = useState('+7');
   const [sending, setSending] = useState(false);
   const [pairCode, setPairCode] = useState('');
   const [codeCopied, setCodeCopied] = useState(false);
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
   const webShellRef = useRef(null);
+  const [botLoading, setBotLoading] = useState(true);
+  const [resolvedBotId, setResolvedBotId] = useState(
+    botIdProp != null && String(botIdProp) !== '' ? String(botIdProp) : null,
+  );
+  const [botResolveError, setBotResolveError] = useState('');
+  const linkAbortRef = useRef(null);
+  const [needsRegistration, setNeedsRegistration] = useState(false);
+  const [registerModalVisible, setRegisterModalVisible] = useState(false);
+
+  const cancelLinkWait = useCallback(() => {
+    linkAbortRef.current?.abort();
+    setSending(false);
+  }, []);
+
+  useEffect(() => {
+    if (botIdProp != null && String(botIdProp) !== '') {
+      setResolvedBotId(String(botIdProp));
+      setBotResolveError('');
+      setBotLoading(false);
+      return undefined;
+    }
+    let cancelled = false;
+    (async () => {
+      setBotLoading(true);
+      setBotResolveError('');
+      try {
+        const me = await fetchAuthMe();
+        if (cancelled) return;
+        const isAuthed = me?.ok === true && me?.user != null;
+        if (!isAuthed) {
+          setNeedsRegistration(true);
+          setBotLoading(false);
+          return;
+        }
+        setNeedsRegistration(false);
+        const data = await fetchSession();
+        if (cancelled) return;
+        const id = getBotIdFromSession(data);
+        setResolvedBotId(id);
+        if (!id) {
+          setBotResolveError(
+            'Чтобы подключить WhatsApp, сначала создайте агента (выберите Instagram и дождитесь готовности).',
+          );
+        }
+      } catch (e) {
+        if (!cancelled) {
+          if (errorMeansRegistrationRequired(e)) {
+            setNeedsRegistration(true);
+          } else {
+            setBotResolveError('Не удалось загрузить сессию. Проверьте сеть и попробуйте снова.');
+          }
+        }
+      } finally {
+        if (!cancelled) setBotLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [botIdProp]);
 
   /** Web: оболочка = точный rect visualViewport (top/left/width/height), без translate — иначе зазор над клавиатурой и съезжает вёрстка */
   const syncWebShellLayout = useCallback(() => {
@@ -129,35 +325,55 @@ export default function WaConnectScreen({ onClose, onSuccess }) {
     }, 45);
   }, [syncWebShellLayout]);
 
-  useEffect(() => {
-    if (IS_WEB) return undefined;
-    const showEvt =
-      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-    const hideEvt =
-      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
-    const s = Keyboard.addListener(showEvt, (e) => {
-      setKeyboardHeight(e.endCoordinates?.height ?? 0);
-    });
-    const h = Keyboard.addListener(hideEvt, () => setKeyboardHeight(0));
-    return () => {
-      s.remove();
-      h.remove();
-    };
-  }, []);
+  const normalizedPhone = useMemo(() => {
+    return sanitizePhoneInput(phoneText);
+  }, [phoneText]);
 
-  const phoneOk = digitsOnly(phoneDigits).length >= 11;
+  const parsedPhone = useMemo(
+    () => parsePhoneNumberFromString(normalizedPhone || ''),
+    [normalizedPhone],
+  );
+  const phoneOk = Boolean(parsedPhone?.isValid()) && !!resolvedBotId;
 
-  const submitPhone = useCallback(() => {
-    if (!phoneOk) return;
+  const submitPhone = useCallback(async () => {
+    if (!parsedPhone?.isValid() || !resolvedBotId) return;
+    const d = digitsOnly(parsedPhone.number || normalizedPhone);
+    if (!d) return;
     Keyboard.dismiss();
+    linkAbortRef.current?.abort();
+    const ac = new AbortController();
+    linkAbortRef.current = ac;
     setSending(true);
-    setTimeout(() => {
-      setSending(false);
-      setPairCode(generatePairCode());
-      setCodeCopied(false);
+    setCodeCopied(false);
+    try {
+      const result = await linkBotWhatsApp(resolvedBotId, d, { signal: ac.signal });
+      const code = result?.data?.code;
+      if (code == null || String(code).trim() === '') {
+        throw new Error('Сервер не вернул код привязки');
+      }
+      setPairCode(formatPairCodeValue(code));
       setStep(2);
-    }, 900);
-  }, [phoneOk]);
+    } catch (e) {
+      if (e?.name === 'AbortError') {
+        return;
+      }
+      if (errorMeansRegistrationRequired(e)) {
+        setNeedsRegistration(true);
+        setRegisterModalVisible(true);
+        return;
+      }
+      let msg = e?.message || 'Не удалось начать привязку';
+      if (e?.status === 403) {
+        msg = 'Нет доступа к этому боту.';
+      } else if (e?.status === 503) {
+        msg = 'Свободных инстансов WhatsApp сейчас нет. Попробуйте позже.';
+      }
+      Alert.alert('WhatsApp', msg);
+    } finally {
+      linkAbortRef.current = null;
+      setSending(false);
+    }
+  }, [parsedPhone, normalizedPhone, resolvedBotId]);
 
   const copyCode = useCallback(async () => {
     if (!pairCode) return;
@@ -180,9 +396,7 @@ export default function WaConnectScreen({ onClose, onSuccess }) {
     }
   }, []);
 
-  const displayPhone = formatPhoneDisplay(digitsOnly(phoneDigits));
-
-  const stickFooter = !IS_WEB && keyboardHeight > 0;
+  const displayPhone = parsedPhone?.formatInternational?.() || formatPhoneDisplay(digitsOnly(phoneText));
 
   const webShellStyle = {
     position: 'fixed',
@@ -199,18 +413,43 @@ export default function WaConnectScreen({ onClose, onSuccess }) {
     touchAction: 'manipulation',
   };
 
+  const blockingGate = botLoading ? (
+    <View style={styles.gateWrap}>
+      <ActivityIndicator size="large" color="#25D366" />
+      <Text style={styles.gateText}>Проверяем агента…</Text>
+    </View>
+  ) : !resolvedBotId && !needsRegistration ? (
+    <View style={styles.gateWrap}>
+      <Ionicons name="alert-circle-outline" size={52} color="#DC2626" />
+      <Text style={styles.gateErrorTitle}>Нельзя подключить WhatsApp</Text>
+      <Text style={styles.gateErrorText}>{botResolveError}</Text>
+      <Pressable
+        onPress={onClose}
+        style={({ pressed }) => [styles.btnPrimary, pressed && styles.btnPressed]}
+        accessibilityRole="button"
+        accessibilityLabel="Закрыть"
+      >
+        <Text style={styles.btnPrimaryText}>Закрыть</Text>
+      </Pressable>
+    </View>
+  ) : null;
+
+  const showRegGate = needsRegistration && !botLoading;
+
   const body = (
     <>
       <View style={styles.topBar}>
-        <View style={styles.stepDots}>
-          {[1, 2, 3].map((s) => (
-            <View
-              key={s}
-              style={[styles.dot, step >= s && styles.dotActive]}
-              accessibilityElementsHidden
-            />
-          ))}
-        </View>
+        {!showRegGate ? (
+          <View style={styles.stepDots}>
+            {[1, 2, 3].map((s) => (
+              <View
+                key={s}
+                style={[styles.dot, step >= s && styles.dotActive]}
+                accessibilityElementsHidden
+              />
+            ))}
+          </View>
+        ) : <View />}
         <Pressable
           onPress={onClose}
           style={styles.closeBtn}
@@ -221,64 +460,97 @@ export default function WaConnectScreen({ onClose, onSuccess }) {
         </Pressable>
       </View>
 
+      {showRegGate ? (
+        <View style={styles.regGate}>
+          <View style={styles.regGateIconWrap}>
+            <Ionicons name="logo-whatsapp" size={36} color="#25D366" />
+          </View>
+          <Text style={styles.regGateTitle}>Подключение WhatsApp</Text>
+          <Text style={styles.regGateText}>
+            Чтобы привязать WhatsApp к агенту, сначала создайте аккаунт — это займёт меньше минуты.
+          </Text>
+          <View style={styles.regGateBannerWrap}>
+            <Pressable
+              onPress={() => setRegisterModalVisible(true)}
+              style={({ pressed }) => [
+                styles.createAccountBtn,
+                pressed && styles.createAccountBtnPressed,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Создать аккаунт"
+            >
+              <Text style={styles.createAccountBtnText}>Создать аккаунт</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+
+      {blockingGate && !showRegGate ? (
+        <View style={styles.gateScroll}>{blockingGate}</View>
+      ) : null}
+
+      {!blockingGate && !showRegGate ? (
       <ScrollView
         style={styles.scrollFlex}
         contentContainerStyle={[
           styles.scrollContent,
-          step === 3 && stickFooter && styles.scrollContentWithStickyFooter,
           (step === 1 || step === 2) && styles.scrollContentStep1,
         ]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {step === 1 && (
+        {step === 1 && sending ? (
+          <WaLinkWaitView onCancel={cancelLinkWait} />
+        ) : null}
+
+        {step === 1 && !sending ? (
           <>
             <Text style={styles.phaseLabel}>Шаг 1 — номер</Text>
             <Text style={styles.leadTitle}>Введите номер WhatsApp</Text>
             <Text style={styles.subLead}>
-              На него придёт уведомление со ссылкой — по ней вы введёте код и
-              подтвердите привязку.
+              После «Продолжить» запрос к WhatsApp может идти до 1–2 минут — это
+              нормально. Дальше вы получите код для вставки в приложение.
             </Text>
             <Text style={styles.inputLabel}>Телефон</Text>
             <TextInput
               style={styles.input}
-              value={displayPhone}
-              onChangeText={(t) => {
-                const d = digitsOnly(t);
-                if (d.length === 0) setPhoneDigits('');
-                else setPhoneDigits(d.startsWith('7') ? d : `7${d.replace(/^7+/, '')}`);
+              value={phoneText}
+              onChangeText={(text) => {
+                const normalized = sanitizePhoneInput(text);
+                if (!normalized) {
+                  setPhoneText('');
+                  return;
+                }
+                const formatter = new AsYouType();
+                const formatted = formatter.input(normalized);
+                setPhoneText(formatted || normalized);
               }}
               placeholder="+7 900 000-00-00"
               placeholderTextColor="#9CA3AF"
               keyboardType="phone-pad"
-              maxLength={18}
+              autoCapitalize="none"
+              autoCorrect={false}
               accessibilityLabel="Номер телефона"
               onFocus={IS_WEB ? onWebInputFocus : undefined}
             />
             <View style={styles.step1BtnWrap}>
               <Pressable
                 onPress={submitPhone}
-                disabled={!phoneOk || sending}
+                disabled={!phoneOk}
                 style={({ pressed }) => [
                   styles.btnPrimary,
-                  (!phoneOk || sending) && styles.btnDisabled,
-                  pressed && phoneOk && !sending && styles.btnPressed,
+                  !phoneOk && styles.btnDisabled,
+                  pressed && phoneOk && styles.btnPressed,
                 ]}
                 accessibilityRole="button"
                 accessibilityLabel="Продолжить"
               >
-                {sending ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <>
-                    <Text style={styles.btnPrimaryText}>Продолжить</Text>
-                    <Ionicons name="arrow-forward" size={20} color="#fff" />
-                  </>
-                )}
+                <Text style={styles.btnPrimaryText}>Продолжить</Text>
+                <Ionicons name="arrow-forward" size={20} color="#fff" />
               </Pressable>
             </View>
           </>
-        )}
+        ) : null}
 
         {step === 2 && (
           <>
@@ -363,31 +635,39 @@ export default function WaConnectScreen({ onClose, onSuccess }) {
                 Если уведомления не было, проверьте номер и начните с шага 1.
               </Text>
             </View>
+            <Pressable
+              onPress={onSuccess}
+              style={({ pressed }) => [
+                styles.btnWa,
+                styles.step3SubmitBtn,
+                pressed && styles.btnPressed,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Я ввёл код в WhatsApp"
+            >
+              <Ionicons name="logo-whatsapp" size={22} color="#fff" />
+              <Text style={styles.btnWaText}>Я ввёл код в WhatsApp</Text>
+            </Pressable>
           </>
         )}
       </ScrollView>
-
-      {step === 3 ? (
-        <View
-          style={[
-            styles.footer,
-            stickFooter && [
-              styles.footerSticky,
-              { bottom: keyboardHeight },
-            ],
-          ]}
-        >
-          <Pressable
-            onPress={onSuccess}
-            style={({ pressed }) => [styles.btnWa, pressed && styles.btnPressed]}
-            accessibilityRole="button"
-            accessibilityLabel="Я ввёл код в WhatsApp"
-          >
-            <Ionicons name="logo-whatsapp" size={22} color="#fff" />
-            <Text style={styles.btnWaText}>Я ввёл код в WhatsApp</Text>
-          </Pressable>
-        </View>
       ) : null}
+
+      <RegisterAccountModal
+        visible={registerModalVisible}
+        onClose={() => setRegisterModalVisible(false)}
+        onRegistered={async () => {
+          setRegisterModalVisible(false);
+          setNeedsRegistration(false);
+          try {
+            const data = await fetchSession();
+            const id = getBotIdFromSession(data);
+            if (id) setResolvedBotId(id);
+          } catch {
+            /* session will be retried on next action */
+          }
+        }}
+      />
     </>
   );
 
@@ -442,6 +722,37 @@ const styles = StyleSheet.create({
   closeBtn: {
     padding: 8,
   },
+  gateScroll: {
+    flex: 1,
+    minHeight: 220,
+  },
+  gateWrap: {
+    flex: 1,
+    paddingHorizontal: 24,
+    paddingVertical: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 14,
+  },
+  gateText: {
+    fontSize: 16,
+    color: '#6B7280',
+    marginTop: 4,
+  },
+  gateErrorTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#111827',
+    textAlign: 'center',
+  },
+  gateErrorText: {
+    fontSize: 15,
+    lineHeight: 22,
+    color: '#6B7280',
+    textAlign: 'center',
+    marginBottom: 4,
+    maxWidth: 320,
+  },
   scroll: {
     flex: 1,
   },
@@ -453,12 +764,166 @@ const styles = StyleSheet.create({
     padding: 24,
     paddingBottom: 32,
   },
-  scrollContentWithStickyFooter: {
-    paddingBottom: 120,
-  },
   scrollContentStep1: {
     paddingBottom: 48,
     flexGrow: 1,
+  },
+  waWaitRoot: {
+    paddingBottom: 24,
+  },
+  waWaitTitle: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: '#0f172a',
+    marginTop: 6,
+    lineHeight: 30,
+  },
+  waWaitLead: {
+    fontSize: 16,
+    lineHeight: 24,
+    color: '#64748b',
+    marginTop: 12,
+  },
+  waWaitLeadBold: {
+    fontWeight: '700',
+    color: '#0f766e',
+  },
+  waWaitVisual: {
+    alignItems: 'center',
+    marginTop: 28,
+    marginBottom: 8,
+  },
+  waWaitIconRing: {
+    marginBottom: 28,
+  },
+  waWaitIconInner: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    backgroundColor: '#25D366',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#25D366',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.35,
+    shadowRadius: 16,
+    elevation: 10,
+  },
+  waShimmerTrack: {
+    position: 'relative',
+    width: '100%',
+    maxWidth: 300,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#E2E8F0',
+    overflow: 'hidden',
+    marginBottom: 22,
+    alignSelf: 'center',
+  },
+  waShimmerFill: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    width: 120,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#25D366',
+  },
+  waWaitHint: {
+    fontSize: 15,
+    lineHeight: 22,
+    color: '#475569',
+    textAlign: 'center',
+    paddingHorizontal: 8,
+    minHeight: 66,
+  },
+  waWaitChips: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 10,
+    marginTop: 8,
+    marginBottom: 24,
+  },
+  waWaitChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: '#F1F5F9',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  waWaitChipText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#334155',
+  },
+  waWaitCancelBtn: {
+    alignSelf: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 28,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#CBD5E1',
+    backgroundColor: '#fff',
+  },
+  waWaitCancelText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#64748b',
+  },
+  regGate: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 28,
+    paddingBottom: 40,
+  },
+  regGateIconWrap: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: '#ECFDF5',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  regGateTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#111827',
+    textAlign: 'center',
+    marginBottom: 10,
+  },
+  regGateText: {
+    fontSize: 16,
+    lineHeight: 24,
+    color: '#6B7280',
+    textAlign: 'center',
+    maxWidth: 320,
+    marginBottom: 28,
+  },
+  regGateBannerWrap: {
+    width: '100%',
+    maxWidth: 360,
+  },
+  createAccountBtn: {
+    backgroundColor: '#2563EB',
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  createAccountBtnPressed: {
+    backgroundColor: '#1D4ED8',
+  },
+  createAccountBtnText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 16,
   },
   step1BtnWrap: {
     marginTop: 28,
@@ -494,11 +959,8 @@ const styles = StyleSheet.create({
     color: '#111827',
   },
   codeBlock: {
-    backgroundColor: '#F9FAFB',
-    borderRadius: 16,
-    borderWidth: 2,
-    borderColor: '#E5E7EB',
-    padding: 20,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
     marginBottom: 24,
     alignItems: 'center',
   },
@@ -554,7 +1016,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#111827',
     backgroundColor: '#FAFAFA',
-    ...(Platform.OS === 'web' && { outlineStyle: 'none' }),
+    ...(Platform.OS === 'web' ? { outlineStyle: 'none' } : {}),
   },
   card: {
     backgroundColor: '#F0FDF4',
@@ -611,24 +1073,9 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     color: '#1E40AF',
   },
-  footer: {
-    flexShrink: 0,
-    padding: 16,
-    paddingBottom: Platform.OS === 'ios' ? 28 : IS_WEB ? 8 : 20,
-    borderTopWidth: 1,
-    borderTopColor: '#E5E7EB',
-    backgroundColor: '#fff',
-  },
-  footerSticky: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    paddingBottom: Platform.OS === 'ios' ? 14 : 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 12,
+  step3SubmitBtn: {
+    marginTop: 22,
+    marginBottom: 16,
   },
   btnPrimary: {
     flexDirection: 'row',
