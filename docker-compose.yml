@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  chatera-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chatera-mvp
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+    networks:
+      - chatera-network
+
+networks:
+  chatera-network:
+    driver: bridge

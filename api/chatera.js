@@ -3,13 +3,15 @@
  * Базовый URL — origin без хвостового слэша; пути как в спецификации (/api/...).
  */
 
-const DEFAULT_ORIGIN = 'https://app.chatera.ai';
-
 export function getChateraApiOrigin() {
   const fromEnv =
-    typeof process !== 'undefined' && process.env?.EXPO_PUBLIC_CHATERA_API_URL;
-  const raw = String(fromEnv || DEFAULT_ORIGIN).trim();
-  return raw.replace(/\/+$/, '');
+    typeof process !== "undefined" && process.env?.EXPO_PUBLIC_CHATERA_API_URL;
+  const fromWindow =
+    typeof window !== "undefined" && typeof window.location?.origin === "string"
+      ? window.location.origin
+      : "";
+  const raw = String(fromEnv || fromWindow || "").trim();
+  return raw.replace(/\/+$/, "");
 }
 
 /**
@@ -21,12 +23,12 @@ export function errorMeansRegistrationRequired(err) {
   if (err == null) return false;
   if (err.status === 401) return true;
   const fromBody =
-    (typeof err.body?.error === 'string' && err.body.error) ||
-    (typeof err.body?.message === 'string' && err.body.message) ||
-    '';
-  const combined = `${err.message || ''} ${fromBody}`.toUpperCase();
-  if (combined.includes('NOT_AUTHENTICATED')) return true;
-  if (combined.includes('AUTHENTICATION REQUIRED')) return true;
+    (typeof err.body?.error === "string" && err.body.error) ||
+    (typeof err.body?.message === "string" && err.body.message) ||
+    "";
+  const combined = `${err.message || ""} ${fromBody}`.toUpperCase();
+  if (combined.includes("NOT_AUTHENTICATED")) return true;
+  if (combined.includes("AUTHENTICATION REQUIRED")) return true;
   return false;
 }
 
@@ -38,14 +40,18 @@ export function errorMeansRegistrationRequired(err) {
 export async function createSession() {
   const origin = getChateraApiOrigin();
   const res = await fetch(`${origin}/api/session`, {
-    method: 'POST',
-    headers: { Accept: 'application/json' },
-    credentials: 'include',
+    method: "POST",
+    headers: { Accept: "application/json" },
+    credentials: "include",
   });
   let data = {};
   const text = await res.text();
   if (text) {
-    try { data = JSON.parse(text); } catch { /* ignore */ }
+    try {
+      data = JSON.parse(text);
+    } catch {
+      /* ignore */
+    }
   }
   return data;
 }
@@ -57,14 +63,18 @@ export async function createSession() {
 export async function fetchSession() {
   const origin = getChateraApiOrigin();
   const res = await fetch(`${origin}/api/session`, {
-    method: 'GET',
-    headers: { Accept: 'application/json' },
-    credentials: 'include',
+    method: "GET",
+    headers: { Accept: "application/json" },
+    credentials: "include",
   });
   let data = {};
   const text = await res.text();
   if (text) {
-    try { data = JSON.parse(text); } catch { /* ignore */ }
+    try {
+      data = JSON.parse(text);
+    } catch {
+      /* ignore */
+    }
   }
   if (res.status === 404 || !res.ok) return null;
   return data;
@@ -78,9 +88,9 @@ export async function fetchSession() {
 export async function fetchBots() {
   const origin = getChateraApiOrigin();
   const res = await fetch(`${origin}/api/bots`, {
-    method: 'GET',
-    headers: { Accept: 'application/json' },
-    credentials: 'include',
+    method: "GET",
+    headers: { Accept: "application/json" },
+    credentials: "include",
   });
   let data = {};
   const text = await res.text();
@@ -109,7 +119,7 @@ export function getFirstBotIdFromBots(apiResponse) {
   const list = apiResponse?.bots;
   if (!Array.isArray(list) || list.length === 0) return null;
   const raw = list[0]?._id ?? list[0]?.id;
-  if (raw == null || raw === '') return null;
+  if (raw == null || raw === "") return null;
   return String(raw);
 }
 
@@ -120,17 +130,18 @@ export function getFirstBotIdFromBots(apiResponse) {
  */
 export function parseBotSettingsFromSession(apiResponse) {
   const bot = apiResponse?.session?.bot;
-  if (!bot || typeof bot !== 'object' || Object.keys(bot).length === 0) {
+  if (!bot || typeof bot !== "object" || Object.keys(bot).length === 0) {
     return null;
   }
 
   let instruction = null;
   const p = bot.prompt;
-  if (typeof p === 'string' && p.trim()) {
+  if (typeof p === "string" && p.trim()) {
     instruction = p;
-  } else if (p != null && typeof p === 'object') {
-    if (typeof p.text === 'string' && p.text.trim()) instruction = p.text;
-    else if (typeof p.content === 'string' && p.content.trim()) instruction = p.content;
+  } else if (p != null && typeof p === "object") {
+    if (typeof p.text === "string" && p.text.trim()) instruction = p.text;
+    else if (typeof p.content === "string" && p.content.trim())
+      instruction = p.content;
   }
 
   let stages = null;
@@ -140,29 +151,34 @@ export function parseBotSettingsFromSession(apiResponse) {
         return {
           id: `st_${i}`,
           title: `Этап ${i + 1}`,
-          prompt: '',
+          prompt: "",
           allowedMoves: [],
           order: undefined,
         };
       }
-      if (typeof s === 'string') {
-        return { id: `st_${i}`, title: s, prompt: '', allowedMoves: [], order: undefined };
+      if (typeof s === "string") {
+        return {
+          id: `st_${i}`,
+          title: s,
+          prompt: "",
+          allowedMoves: [],
+          order: undefined,
+        };
       }
-      const titleRaw =
-        s.name ?? s.title ?? s.label ?? s.stage ?? s.description;
+      const titleRaw = s.name ?? s.title ?? s.label ?? s.stage ?? s.description;
       const title =
         titleRaw != null && String(titleRaw).trim()
           ? String(titleRaw).trim()
           : `Этап ${i + 1}`;
       const id = String(s._id ?? s.id ?? s.key ?? `st_${i}`);
-      const prompt = typeof s.prompt === 'string' ? s.prompt : '';
+      const prompt = typeof s.prompt === "string" ? s.prompt : "";
       const allowedMoves = Array.isArray(s.allowedMoves)
         ? s.allowedMoves.map((x) => String(x))
         : [];
       let order;
-      if (typeof s.order === 'number' && !Number.isNaN(s.order)) {
+      if (typeof s.order === "number" && !Number.isNaN(s.order)) {
         order = s.order;
-      } else if (s.order != null && String(s.order).trim() !== '') {
+      } else if (s.order != null && String(s.order).trim() !== "") {
         const n = Number(String(s.order).trim());
         if (!Number.isNaN(n)) order = n;
       }
@@ -181,9 +197,9 @@ export function parseBotSettingsFromSession(apiResponse) {
  */
 export function getBotIdFromSession(apiResponse) {
   const bot = apiResponse?.session?.bot;
-  if (!bot || typeof bot !== 'object') return null;
+  if (!bot || typeof bot !== "object") return null;
   const raw = bot._id ?? bot.id;
-  if (raw == null || raw === '') return null;
+  if (raw == null || raw === "") return null;
   return String(raw);
 }
 
@@ -194,9 +210,9 @@ export function getBotIdFromSession(apiResponse) {
  */
 export function getBotPhoneNumberFromSession(apiResponse) {
   const bot = apiResponse?.session?.bot;
-  if (!bot || typeof bot !== 'object') return null;
+  if (!bot || typeof bot !== "object") return null;
   const raw = bot.phoneNumber;
-  if (raw == null || String(raw).trim() === '') return null;
+  if (raw == null || String(raw).trim() === "") return null;
   return String(raw).trim();
 }
 
@@ -207,7 +223,7 @@ export function getBotPhoneNumberFromSession(apiResponse) {
  */
 export function isWhatsAppLinkedForBot(bot) {
   const raw = bot?.phoneNumber;
-  return raw != null && String(raw).trim() !== '';
+  return raw != null && String(raw).trim() !== "";
 }
 
 /**
@@ -217,33 +233,38 @@ export function isWhatsAppLinkedForBot(bot) {
  */
 export function buildResumeAccountFromSession(apiResponse) {
   const s = apiResponse?.session;
-  if (!s || typeof s !== 'object') {
+  if (!s || typeof s !== "object") {
     return {
-      id: 'session',
-      username: 'business',
-      fullName: 'Ваш агент',
+      id: "session",
+      username: "business",
+      fullName: "Ваш агент",
       profilePicUrl: null,
     };
   }
   const quiz =
-    s.quiz && typeof s.quiz === 'object' && !Array.isArray(s.quiz) ? s.quiz : {};
+    s.quiz && typeof s.quiz === "object" && !Array.isArray(s.quiz)
+      ? s.quiz
+      : {};
   const fromQuiz = (k) => {
     const v = quiz[k];
-    return typeof v === 'string' && v.trim() ? v.trim() : '';
+    return typeof v === "string" && v.trim() ? v.trim() : "";
   };
   let username =
-    fromQuiz('username') ||
-    fromQuiz('instagramUsername') ||
-    fromQuiz('instagram_handle') ||
-    '';
-  if (!username) username = 'business';
-  else username = username.replace(/^@/, '');
+    fromQuiz("username") ||
+    fromQuiz("instagramUsername") ||
+    fromQuiz("instagram_handle") ||
+    "";
+  if (!username) username = "business";
+  else username = username.replace(/^@/, "");
   const fullNameRaw =
-    fromQuiz('businessName') || fromQuiz('fullName') || fromQuiz('name') || username;
+    fromQuiz("businessName") ||
+    fromQuiz("fullName") ||
+    fromQuiz("name") ||
+    username;
   const id =
-    (typeof s.instagramAccountId === 'string' && s.instagramAccountId) ||
+    (typeof s.instagramAccountId === "string" && s.instagramAccountId) ||
     getBotIdFromSession(apiResponse) ||
-    'session';
+    "session";
   return {
     id: String(id),
     username,
@@ -261,31 +282,35 @@ export function buildResumeAccountFromSession(apiResponse) {
  */
 export async function linkBotWhatsApp(botId, phoneNumberDigits, options = {}) {
   const { signal } = options;
-  const digits = String(phoneNumberDigits || '').replace(/\D/g, '');
+  const digits = String(phoneNumberDigits || "").replace(/\D/g, "");
   if (digits.length < 10 || digits.length > 15) {
-    throw new Error('Номер: от 10 до 15 цифр');
+    throw new Error("Номер: от 10 до 15 цифр");
   }
   const origin = getChateraApiOrigin();
   const url = `${origin}/api/bots/${encodeURIComponent(botId)}/link-whatsapp`;
   const res = await fetch(url, {
-    method: 'POST',
+    method: "POST",
     headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
+      Accept: "application/json",
+      "Content-Type": "application/json",
     },
     body: JSON.stringify({ phoneNumber: digits }),
-    credentials: 'include',
+    credentials: "include",
     signal,
   });
   let data = {};
   const text = await res.text();
   if (text) {
-    try { data = JSON.parse(text); } catch { /* ignore */ }
+    try {
+      data = JSON.parse(text);
+    } catch {
+      /* ignore */
+    }
   }
   if (!res.ok) {
     const msg =
-      (typeof data.message === 'string' && data.message) ||
-      (typeof data.error === 'string' && data.error) ||
+      (typeof data.message === "string" && data.message) ||
+      (typeof data.error === "string" && data.error) ||
       `Ошибка привязки (${res.status})`;
     const err = new Error(msg);
     err.status = res.status;
@@ -305,18 +330,22 @@ export async function fetchRagEntries(botId, options = {}) {
   const { limit = 100, offset } = options;
   const origin = getChateraApiOrigin();
   const qs = new URLSearchParams();
-  qs.set('limit', String(limit));
-  if (offset != null && String(offset) !== '') qs.set('offset', String(offset));
+  qs.set("limit", String(limit));
+  if (offset != null && String(offset) !== "") qs.set("offset", String(offset));
   const url = `${origin}/api/rag/${encodeURIComponent(botId)}/entries?${qs}`;
   const res = await fetch(url, {
-    method: 'GET',
-    headers: { Accept: 'application/json' },
-    credentials: 'include',
+    method: "GET",
+    headers: { Accept: "application/json" },
+    credentials: "include",
   });
   let data = {};
   const text = await res.text();
   if (text) {
-    try { data = JSON.parse(text); } catch { /* ignore */ }
+    try {
+      data = JSON.parse(text);
+    } catch {
+      /* ignore */
+    }
   }
   if (!res.ok) return null;
   return data;
@@ -331,9 +360,9 @@ export async function fetchRagEntries(botId, options = {}) {
 export async function createRagEntry(botId, payload) {
   const origin = getChateraApiOrigin();
   const url = `${origin}/api/rag/${encodeURIComponent(botId)}/entries`;
-  const title = typeof payload?.title === 'string' ? payload.title.trim() : '';
-  const content = typeof payload?.content === 'string' ? payload.content : '';
-  const type = typeof payload?.type === 'string' ? payload.type : 'custom';
+  const title = typeof payload?.title === "string" ? payload.title.trim() : "";
+  const content = typeof payload?.content === "string" ? payload.content : "";
+  const type = typeof payload?.type === "string" ? payload.type : "custom";
 
   const attemptBodies = [
     { entries: [{ title, content }] },
@@ -344,24 +373,28 @@ export async function createRagEntry(botId, payload) {
   let lastErr = null;
   for (const body of attemptBodies) {
     const res = await fetch(url, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
+        Accept: "application/json",
+        "Content-Type": "application/json",
       },
-      credentials: 'include',
+      credentials: "include",
       body: JSON.stringify(body),
     });
     let data = {};
     const text = await res.text();
     if (text) {
-      try { data = JSON.parse(text); } catch { data = {}; }
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = {};
+      }
     }
     if (res.ok) return data;
 
     const msg =
-      (typeof data.error === 'string' && data.error) ||
-      (typeof data.message === 'string' && data.message) ||
+      (typeof data.error === "string" && data.error) ||
+      (typeof data.message === "string" && data.message) ||
       `Не удалось добавить запись (${res.status})`;
     const err = new Error(msg);
     err.status = res.status;
@@ -369,7 +402,7 @@ export async function createRagEntry(botId, payload) {
     lastErr = err;
     if (res.status !== 400) break;
   }
-  throw lastErr || new Error('Не удалось добавить запись');
+  throw lastErr || new Error("Не удалось добавить запись");
 }
 
 /**
@@ -382,19 +415,23 @@ export async function deleteRagEntry(botId, entryId) {
   const origin = getChateraApiOrigin();
   const url = `${origin}/api/rag/${encodeURIComponent(botId)}/entries/${encodeURIComponent(entryId)}`;
   const res = await fetch(url, {
-    method: 'DELETE',
-    headers: { Accept: 'application/json' },
-    credentials: 'include',
+    method: "DELETE",
+    headers: { Accept: "application/json" },
+    credentials: "include",
   });
   let data = {};
   const text = await res.text();
   if (text) {
-    try { data = JSON.parse(text); } catch { data = {}; }
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = {};
+    }
   }
   if (!res.ok) {
     const msg =
-      (typeof data.error === 'string' && data.error) ||
-      (typeof data.message === 'string' && data.message) ||
+      (typeof data.error === "string" && data.error) ||
+      (typeof data.message === "string" && data.message) ||
       `Не удалось удалить запись (${res.status})`;
     const err = new Error(msg);
     err.status = res.status;
@@ -412,19 +449,19 @@ export async function deleteRagEntry(botId, entryId) {
 export function ragEntriesToKbItems(entries) {
   if (!Array.isArray(entries)) return [];
   return entries.map((e) => {
-    const content = typeof e?.content === 'string' ? e.content : '';
+    const content = typeof e?.content === "string" ? e.content : "";
     const title =
-      typeof e?.title === 'string' && e.title.trim() ? e.title : 'Без названия';
-    const typeStr = e?.type != null ? String(e.type) : '';
+      typeof e?.title === "string" && e.title.trim() ? e.title : "Без названия";
+    const typeStr = e?.type != null ? String(e.type) : "";
     const meta = typeStr
       ? `${content.length} симв. · ${typeStr}`
       : `${content.length} симв.`;
     return {
       id: `rag_${e.id}`,
-      type: 'text',
+      type: "text",
       title,
       text: content,
-      source: 'rag',
+      source: "rag",
       ragEntryId: String(e.id),
       ragType: e.type,
       kbMeta: meta,
@@ -442,18 +479,22 @@ export async function createInstagramBot(username) {
   const origin = getChateraApiOrigin();
   const url = `${origin}/api/instagram/create-bot?username=${encodeURIComponent(username)}`;
   const res = await fetch(url, {
-    method: 'GET',
-    headers: { Accept: 'application/json' },
-    credentials: 'include',
+    method: "GET",
+    headers: { Accept: "application/json" },
+    credentials: "include",
   });
   let data = {};
   const text = await res.text();
   if (text) {
-    try { data = JSON.parse(text); } catch { /* ignore */ }
+    try {
+      data = JSON.parse(text);
+    } catch {
+      /* ignore */
+    }
   }
   if (!res.ok) {
     const msg =
-      (typeof data.message === 'string' && data.message) ||
+      (typeof data.message === "string" && data.message) ||
       `Ошибка создания бота (${res.status})`;
     const err = new Error(msg);
     err.status = res.status;
@@ -468,14 +509,14 @@ export async function createInstagramBot(username) {
  * @returns {Promise<object[]>}
  */
 export async function searchInstagramUsers(query) {
-  const q = String(query || '').trim();
+  const q = String(query || "").trim();
   if (!q) return [];
   const origin = getChateraApiOrigin();
   const url = `${origin}/api/instagram/search?query=${encodeURIComponent(q)}`;
   const res = await fetch(url, {
-    method: 'GET',
-    headers: { Accept: 'application/json' },
-    credentials: 'include',
+    method: "GET",
+    headers: { Accept: "application/json" },
+    credentials: "include",
   });
   let data = {};
   const text = await res.text();
@@ -488,8 +529,8 @@ export async function searchInstagramUsers(query) {
   }
   if (!res.ok) {
     const msg =
-      (typeof data.message === 'string' && data.message) ||
-      (typeof data.error === 'string' && data.error) ||
+      (typeof data.message === "string" && data.message) ||
+      (typeof data.error === "string" && data.error) ||
       `Ошибка поиска (${res.status})`;
     const err = new Error(msg);
     err.status = res.status;
@@ -497,20 +538,22 @@ export async function searchInstagramUsers(query) {
     throw err;
   }
   const users = Array.isArray(data?.users) ? data.users : [];
-  return users.map((u, idx) => ({
-    id: String(u?.pk ?? u?.id ?? `ig_${idx}`),
-    username: String(
-      u?.username ?? u?.user?.username ?? u?.handle ?? '',
-    ).replace(/^@/, ''),
-    fullName:
-      (typeof u?.full_name === 'string' && u.full_name) ||
-      (typeof u?.fullName === 'string' && u.fullName) ||
-      '',
-    profilePicUrl:
-      (typeof u?.profile_pic_url === 'string' && u.profile_pic_url) ||
-      (typeof u?.profilePicUrl === 'string' && u.profilePicUrl) ||
-      null,
-  })).filter((u) => u.username);
+  return users
+    .map((u, idx) => ({
+      id: String(u?.pk ?? u?.id ?? `ig_${idx}`),
+      username: String(
+        u?.username ?? u?.user?.username ?? u?.handle ?? "",
+      ).replace(/^@/, ""),
+      fullName:
+        (typeof u?.full_name === "string" && u.full_name) ||
+        (typeof u?.fullName === "string" && u.fullName) ||
+        "",
+      profilePicUrl:
+        (typeof u?.profile_pic_url === "string" && u.profile_pic_url) ||
+        (typeof u?.profilePicUrl === "string" && u.profilePicUrl) ||
+        null,
+    }))
+    .filter((u) => u.username);
 }
 
 /**
@@ -520,14 +563,18 @@ export async function searchInstagramUsers(query) {
 export async function fetchBotStatus() {
   const origin = getChateraApiOrigin();
   const res = await fetch(`${origin}/api/instagram/bot-status`, {
-    method: 'GET',
-    headers: { Accept: 'application/json' },
-    credentials: 'include',
+    method: "GET",
+    headers: { Accept: "application/json" },
+    credentials: "include",
   });
   let data = {};
   const text = await res.text();
   if (text) {
-    try { data = JSON.parse(text); } catch { /* ignore */ }
+    try {
+      data = JSON.parse(text);
+    } catch {
+      /* ignore */
+    }
   }
   return { status: res.status, data };
 }
@@ -540,25 +587,29 @@ export async function fetchBotStatus() {
 export async function testPromptAgent(message) {
   const origin = getChateraApiOrigin();
   const res = await fetch(`${origin}/api/prompt-agent/test`, {
-    method: 'POST',
+    method: "POST",
     headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
+      Accept: "application/json",
+      "Content-Type": "application/json",
     },
     body: JSON.stringify({ message }),
-    credentials: 'include',
+    credentials: "include",
   });
 
   let data = {};
   const text = await res.text();
   if (text) {
-    try { data = JSON.parse(text); } catch { /* ignore */ }
+    try {
+      data = JSON.parse(text);
+    } catch {
+      /* ignore */
+    }
   }
 
   if (!res.ok) {
     const msg =
-      (typeof data.error === 'string' && data.error) ||
-      (typeof data.message === 'string' && data.message) ||
+      (typeof data.error === "string" && data.error) ||
+      (typeof data.message === "string" && data.message) ||
       `Ошибка (${res.status})`;
     const err = new Error(msg);
     err.status = res.status;
@@ -575,25 +626,29 @@ export async function testPromptAgent(message) {
 export async function resetTestPromptHistory() {
   const origin = getChateraApiOrigin();
   const res = await fetch(`${origin}/api/prompt-agent/test`, {
-    method: 'POST',
+    method: "POST",
     headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
+      Accept: "application/json",
+      "Content-Type": "application/json",
     },
     body: JSON.stringify({ resetHistory: true }),
-    credentials: 'include',
+    credentials: "include",
   });
 
   let data = {};
   const text = await res.text();
   if (text) {
-    try { data = JSON.parse(text); } catch { /* ignore */ }
+    try {
+      data = JSON.parse(text);
+    } catch {
+      /* ignore */
+    }
   }
 
   if (!res.ok) {
     const msg =
-      (typeof data.error === 'string' && data.error) ||
-      (typeof data.message === 'string' && data.message) ||
+      (typeof data.error === "string" && data.error) ||
+      (typeof data.message === "string" && data.message) ||
       `Ошибка сброса (${res.status})`;
     const err = new Error(msg);
     err.status = res.status;
@@ -610,14 +665,18 @@ export async function resetTestPromptHistory() {
 export async function fetchTestBotHistory() {
   const origin = getChateraApiOrigin();
   const res = await fetch(`${origin}/api/prompt-agent/test-history`, {
-    method: 'GET',
-    headers: { Accept: 'application/json' },
-    credentials: 'include',
+    method: "GET",
+    headers: { Accept: "application/json" },
+    credentials: "include",
   });
   let data = {};
   const text = await res.text();
   if (text) {
-    try { data = JSON.parse(text); } catch { /* ignore */ }
+    try {
+      data = JSON.parse(text);
+    } catch {
+      /* ignore */
+    }
   }
   if (!res.ok) return { testBotHistory: [] };
   return data;
@@ -633,13 +692,13 @@ export async function fetchBotChats(botId, options = {}) {
   const { page = 1, limit = 20 } = options;
   const origin = getChateraApiOrigin();
   const qs = new URLSearchParams();
-  qs.set('page', String(page));
-  qs.set('limit', String(limit));
+  qs.set("page", String(page));
+  qs.set("limit", String(limit));
   const url = `${origin}/api/bots/${encodeURIComponent(botId)}/chats?${qs}`;
   const res = await fetch(url, {
-    method: 'GET',
-    headers: { Accept: 'application/json' },
-    credentials: 'include',
+    method: "GET",
+    headers: { Accept: "application/json" },
+    credentials: "include",
   });
   let data = {};
   const text = await res.text();
@@ -652,8 +711,8 @@ export async function fetchBotChats(botId, options = {}) {
   }
   if (!res.ok) {
     const msg =
-      (typeof data.error === 'string' && data.error) ||
-      (typeof data.message === 'string' && data.message) ||
+      (typeof data.error === "string" && data.error) ||
+      (typeof data.message === "string" && data.message) ||
       `Не удалось загрузить диалоги (${res.status})`;
     const err = new Error(msg);
     err.status = res.status;
@@ -672,9 +731,9 @@ export async function fetchChat(botId, chatId) {
   const origin = getChateraApiOrigin();
   const url = `${origin}/api/chats/${encodeURIComponent(botId)}/${encodeURIComponent(chatId)}`;
   const res = await fetch(url, {
-    method: 'GET',
-    headers: { Accept: 'application/json' },
-    credentials: 'include',
+    method: "GET",
+    headers: { Accept: "application/json" },
+    credentials: "include",
   });
   let data = {};
   const text = await res.text();
@@ -687,8 +746,8 @@ export async function fetchChat(botId, chatId) {
   }
   if (!res.ok) {
     const msg =
-      (typeof data.error === 'string' && data.error) ||
-      (typeof data.message === 'string' && data.message) ||
+      (typeof data.error === "string" && data.error) ||
+      (typeof data.message === "string" && data.message) ||
       `Не удалось загрузить чат (${res.status})`;
     const err = new Error(msg);
     err.status = res.status;
@@ -708,15 +767,15 @@ export async function fetchChatMessages(botId, chatId, options = {}) {
   const { page = 1, limit = 50 } = options;
   const origin = getChateraApiOrigin();
   const qs = new URLSearchParams();
-  qs.set('page', String(page));
-  qs.set('limit', String(limit));
+  qs.set("page", String(page));
+  qs.set("limit", String(limit));
   const url = `${origin}/api/chats/${encodeURIComponent(botId)}/${encodeURIComponent(
     chatId,
   )}/messages?${qs}`;
   const res = await fetch(url, {
-    method: 'GET',
-    headers: { Accept: 'application/json' },
-    credentials: 'include',
+    method: "GET",
+    headers: { Accept: "application/json" },
+    credentials: "include",
   });
   let data = {};
   const text = await res.text();
@@ -729,8 +788,8 @@ export async function fetchChatMessages(botId, chatId, options = {}) {
   }
   if (!res.ok) {
     const msg =
-      (typeof data.error === 'string' && data.error) ||
-      (typeof data.message === 'string' && data.message) ||
+      (typeof data.error === "string" && data.error) ||
+      (typeof data.message === "string" && data.message) ||
       `Не удалось загрузить сообщения (${res.status})`;
     const err = new Error(msg);
     err.status = res.status;
@@ -746,8 +805,8 @@ export async function fetchChatMessages(botId, chatId, options = {}) {
  * @returns {boolean} true — пузырь справа (зелёный), как ответ бота/менеджера
  */
 export function isOutgoingWaMessageType(type) {
-  const t = String(type || '').toLowerCase();
-  return t === 'bot' || t === 'manager' || t === 'log';
+  const t = String(type || "").toLowerCase();
+  return t === "bot" || t === "manager" || t === "log";
 }
 
 /**
@@ -760,9 +819,9 @@ export function isOutgoingWaMessageType(type) {
 export async function fetchAuthMe() {
   const origin = getChateraApiOrigin();
   const res = await fetch(`${origin}/api/auth/me`, {
-    method: 'GET',
-    headers: { Accept: 'application/json' },
-    credentials: 'include',
+    method: "GET",
+    headers: { Accept: "application/json" },
+    credentials: "include",
   });
   let data = {};
   const text = await res.text();
@@ -778,7 +837,8 @@ export async function fetchAuthMe() {
       ok: false,
       status: 401,
       message:
-        (typeof data.message === 'string' && data.message) || 'Not authenticated',
+        (typeof data.message === "string" && data.message) ||
+        "Not authenticated",
     };
   }
   if (!res.ok) {
@@ -786,8 +846,8 @@ export async function fetchAuthMe() {
       ok: false,
       status: res.status,
       message:
-        (typeof data.message === 'string' && data.message) ||
-        (typeof data.error === 'string' && data.error) ||
+        (typeof data.message === "string" && data.message) ||
+        (typeof data.error === "string" && data.error) ||
         `Ошибка профиля (${res.status})`,
     };
   }
@@ -795,8 +855,8 @@ export async function fetchAuthMe() {
     ok: true,
     success: data.success,
     user: data.user ?? null,
-    botId: data.botId != null ? String(data.botId) : '',
-    sessionId: data.sessionId != null ? String(data.sessionId) : '',
+    botId: data.botId != null ? String(data.botId) : "",
+    sessionId: data.sessionId != null ? String(data.sessionId) : "",
   };
 }
 
@@ -810,16 +870,16 @@ export async function registerWithEmailPassword({ email, password }) {
   const url = `${origin}/api/auth/register`;
 
   const res = await fetch(url, {
-    method: 'POST',
+    method: "POST",
     headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
+      Accept: "application/json",
+      "Content-Type": "application/json",
     },
     body: JSON.stringify({
       email: email.trim().toLowerCase(),
       password,
     }),
-    credentials: 'include',
+    credentials: "include",
   });
 
   let data = {};
@@ -834,8 +894,8 @@ export async function registerWithEmailPassword({ email, password }) {
 
   if (!res.ok) {
     const msg =
-      (typeof data.message === 'string' && data.message) ||
-      (typeof data.error === 'string' && data.error) ||
+      (typeof data.message === "string" && data.message) ||
+      (typeof data.error === "string" && data.error) ||
       `Запрос не выполнен (${res.status})`;
     const err = new Error(msg);
     err.status = res.status;
@@ -852,7 +912,7 @@ export async function registerWithEmailPassword({ email, password }) {
  * @returns {boolean}
  */
 export function isLikelyMongoObjectId(s) {
-  return typeof s === 'string' && /^[a-fA-F0-9]{24}$/.test(s);
+  return typeof s === "string" && /^[a-fA-F0-9]{24}$/.test(s);
 }
 
 /**
@@ -863,18 +923,15 @@ export function isLikelyMongoObjectId(s) {
  */
 export async function patchBot(botId, body) {
   const origin = getChateraApiOrigin();
-  const res = await fetch(
-    `${origin}/api/bots/${encodeURIComponent(botId)}`,
-    {
-      method: 'PATCH',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
-      body: JSON.stringify(body),
+  const res = await fetch(`${origin}/api/bots/${encodeURIComponent(botId)}`, {
+    method: "PATCH",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
     },
-  );
+    credentials: "include",
+    body: JSON.stringify(body),
+  });
   let data = {};
   const text = await res.text();
   if (text) {
@@ -885,8 +942,8 @@ export async function patchBot(botId, body) {
     }
   }
   const msg =
-    (typeof data.message === 'string' && data.message) ||
-    (res.ok ? '' : `HTTP ${res.status}`);
+    (typeof data.message === "string" && data.message) ||
+    (res.ok ? "" : `HTTP ${res.status}`);
   return {
     ok: res.ok,
     status: res.status,
@@ -908,14 +965,14 @@ export async function patchBotStagePrompt(botId, stageId, prompt) {
       stageId,
     )}`,
     {
-      method: 'PATCH',
+      method: "PATCH",
       headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
+        Accept: "application/json",
+        "Content-Type": "application/json",
       },
-      credentials: 'include',
+      credentials: "include",
       body: JSON.stringify({
-        prompt: typeof prompt === 'string' ? prompt : '',
+        prompt: typeof prompt === "string" ? prompt : "",
       }),
     },
   );
@@ -929,8 +986,8 @@ export async function patchBotStagePrompt(botId, stageId, prompt) {
     }
   }
   const msg =
-    (typeof data.message === 'string' && data.message) ||
-    (res.ok ? '' : `HTTP ${res.status}`);
+    (typeof data.message === "string" && data.message) ||
+    (res.ok ? "" : `HTTP ${res.status}`);
   return {
     ok: res.ok,
     status: res.status,
